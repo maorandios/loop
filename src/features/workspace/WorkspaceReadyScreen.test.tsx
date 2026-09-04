@@ -1,0 +1,338 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { he, returnFileToLabel } from "../../copy/he";
+import type { HandoffRecord } from "../handoff/types";
+import { WorkspaceReadyScreen } from "./WorkspaceReadyScreen";
+
+const workspace = {
+  id: "workspace-1",
+  name: "הצוות של מאור",
+  createdBy: "user-1",
+  createdAt: "2026-09-02T00:00:00.000Z",
+};
+
+const members = [
+  {
+    id: "member-1",
+    workspaceId: "workspace-1",
+    userId: "user-1",
+    deviceId: "11111111-1111-4111-8111-111111111111",
+    displayName: "מאור",
+    joinedAt: "2026-09-02T00:00:00.000Z",
+    lastSeenAt: "2026-09-02T00:00:00.000Z",
+  },
+  {
+    id: "member-2",
+    workspaceId: "workspace-1",
+    userId: "user-2",
+    deviceId: "22222222-2222-4222-8222-222222222222",
+    displayName: "דני",
+    joinedAt: "2026-09-02T00:00:00.000Z",
+    lastSeenAt: "2026-09-02T00:00:00.000Z",
+  },
+];
+
+function handoff(partial: Partial<HandoffRecord>): HandoffRecord {
+  return {
+    id: "handoff-1",
+    workspaceId: "workspace-1",
+    senderMemberId: "member-1",
+    recipientMemberId: "member-2",
+    originalFilename: "דוח.docx",
+    instruction: "נא לבדוק",
+    dueOn: "2026-09-10",
+    status: "sent",
+    createdAt: "2026-09-02T00:00:00.000Z",
+    updatedAt: "2026-09-02T00:00:00.000Z",
+    fileSize: 2048,
+    blake3: "ab".repeat(32),
+    storagePath: null,
+    returnFileSize: null,
+    returnBlake3: null,
+    returnStoragePath: null,
+    versions: [{ versionNumber: 1, storagePath: "p", fileSize: 2048, blake3: "ab".repeat(32) }],
+    events: [],
+    ...partial,
+  };
+}
+
+describe("WorkspaceReadyScreen", () => {
+  it("shows Hebrew member names and isolates the join code", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentDeviceId="11111111-1111-4111-8111-111111111111"
+        joinCode="AB12-CD34"
+        members={[members[0]!]}
+      />,
+    );
+
+    expect(screen.getByText("הצוות של מאור")).toBeInTheDocument();
+    expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
+    expect(screen.getByText(new RegExp(he.thisComputer))).toBeInTheDocument();
+    expect(screen.getByText(he.waitingForMembers)).toBeInTheDocument();
+    expect(screen.getByText("AB12-CD34")).toHaveAttribute("dir", "ltr");
+    expect(document.body.textContent).not.toContain("invalid_join_code");
+    expect(document.body.textContent).not.toContain("JWT");
+    expect(screen.getByRole("button", { name: he.copyJoinCode })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: he.createNewJoinCode }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("lets the creator request a new join code when none is in memory", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        members={[members[0]!]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: he.createNewJoinCode })).toBeInTheDocument();
+  });
+
+  it("does not offer join-code creation to a regular member", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        onSubmitSend={() => undefined}
+        onPickFile={() => undefined}
+        members={members}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: he.createNewJoinCode }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.copyJoinCode })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
+    expect(screen.getByText(he.noWaitingForMe)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("C:\\\\");
+    expect(document.body.textContent).not.toContain("signedUrl");
+  });
+
+  it("shows a received file with download and open actions", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[handoff({ status: "sent" })]}
+        inbox={[]}
+        members={members}
+        onDownloadAndOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("דוח.docx")).toBeInTheDocument();
+    expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openFolder })).not.toBeInTheDocument();
+    expect(screen.getByText(/גרסה 1/)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/sent|handoff-1|storagePath/);
+  });
+
+  it("puts a returned file in waiting_for_me for the sender", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        handoffs={[handoff({ status: "returned", updatedAt: "2026-09-03T00:00:00.000Z" })]}
+        members={members}
+        onOpenLatest={() => undefined}
+        onCompleteHandoff={() => undefined}
+        onRequestRevision={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("דוח.docx")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.approveAndComplete })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
+  });
+
+  it("does not show failed handoffs in the done view", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        handoffs={[
+          handoff({ id: "failed-1", status: "failed", originalFilename: "נכשל.docx" }),
+          handoff({ id: "done-1", status: "completed", originalFilename: "גמור.docx" }),
+        ]}
+        members={members}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    expect(screen.getByText("גמור.docx")).toBeInTheDocument();
+    expect(screen.queryByText("נכשל.docx")).not.toBeInTheDocument();
+  });
+
+  it("does not send without a file, recipient, or instruction", () => {
+    const onSubmitSend = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={members}
+        onSubmitSend={onSubmitSend}
+        onPickFile={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    expect(onSubmitSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.fileRequired);
+  });
+
+  it("blocks an empty revision note", () => {
+    const onRequestRevision = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        handoffs={[handoff({ status: "returned" })]}
+        members={members}
+        onRequestRevision={onRequestRevision}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: he.requestRevision }));
+    fireEvent.click(screen.getByRole("button", { name: he.confirmRevision }));
+    expect(onRequestRevision).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.cloudError.revision_note_required);
+  });
+
+  it("shows the return button only when the cloud status is stably modified", () => {
+    const incoming = handoff({
+      senderMemberId: "member-1",
+      recipientMemberId: "member-2",
+      status: "opened",
+    });
+    const inbox = [
+      {
+        handoffId: "handoff-1",
+        filename: "דוח.docx",
+        version: "v1",
+        contentDiffersFromV1: true,
+        desiredStatus: "modified",
+        pendingRecheck: false,
+        pendingStatusSync: true,
+        generation: 2,
+      },
+    ];
+
+    const { rerender } = render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דנה"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[incoming]}
+        inbox={inbox}
+        members={members}
+        onReturnFile={() => undefined}
+        onDownloadAndOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(he.syncingChanges)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: returnFileToLabel("מאור") }),
+    ).not.toBeInTheDocument();
+
+    rerender(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דנה"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[{ ...incoming, status: "modified" }]}
+        inbox={[{ ...inbox[0]!, pendingStatusSync: false }]}
+        members={members}
+        onReturnFile={() => undefined}
+        onDownloadAndOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
+    expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
+    expect(screen.getByText(he.handoffStatus.modified)).toBeInTheDocument();
+  });
+
+  it("renders Hebrew history with versions and notes", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        handoffs={[
+          handoff({
+            status: "completed",
+            events: [
+              {
+                eventType: "finalized",
+                note: null,
+                versionNumber: 1,
+                actorMemberId: "member-1",
+                createdAt: "2026-09-02T08:00:00.000Z",
+              },
+              {
+                eventType: "returned",
+                note: null,
+                versionNumber: 3,
+                actorMemberId: "member-2",
+                createdAt: "2026-09-02T09:00:00.000Z",
+              },
+              {
+                eventType: "revision_requested",
+                note: "חסר החתימה",
+                versionNumber: 3,
+                actorMemberId: "member-1",
+                createdAt: "2026-09-02T10:00:00.000Z",
+              },
+              {
+                eventType: "completed",
+                note: null,
+                versionNumber: 3,
+                actorMemberId: "member-1",
+                createdAt: "2026-09-02T11:00:00.000Z",
+              },
+            ],
+          }),
+        ]}
+        members={members}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
+    expect(screen.getByText(he.historySent)).toBeInTheDocument();
+    expect(screen.getAllByText("נא לבדוק").length).toBeGreaterThan(0);
+    expect(screen.getByText("הוחזר · גרסה 3")).toBeInTheDocument();
+    expect(screen.getByText("חסר החתימה")).toBeInTheDocument();
+    expect(screen.getByText(he.historyCompleted)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/finalized|revision_requested|completed/);
+  });
+});
