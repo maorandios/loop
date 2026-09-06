@@ -7,17 +7,40 @@ import {
   CloudProblemScreen,
 } from "./screens/CloudScreens";
 import { cloudErrorHint, cloudErrorLabel, he } from "./copy/he";
+import { createCommandIdStore } from "./features/handoff/commandIds";
 import { createSupabaseHandoffService } from "./features/handoff/service";
+import { createHandoffSyncController } from "./features/handoff/sync";
 import { createReconciliationRegistry, isReturnTerminal } from "./features/handoff/reconciliation";
+import {
+  attachFileRequest,
+  abortResumeRecord,
+  createFileRequest,
+  inboxGenerationFor,
+  openRootTransfer,
+  recoverResumeRecord,
+  resultActionForRequest,
+  sendHandoffV2,
+  submitWithFile,
+  submitWithoutFile,
+  workingFileChangedAfterPrepare,
+  type InvokeFn,
+} from "./features/handoff/v2";
+import { projectHandoffList } from "./features/handoff/view";
 import type {
   HandoffRecord,
   HandoffService,
   InboxLocalEntry,
   LocalStateEvent,
+  LocalWorkState,
   PendingLocalStatus,
   PickedFile,
+  PreparedResultSnapshot,
   PreparedReturnSnapshot,
+  ResultAction,
+  ResumeSummary,
+  SendAction,
   SendProgress,
+  TransferRecord,
 } from "./features/handoff/types";
 import { latestHandoffVersion, versionLabel } from "./features/handoff/versions";
 import { createSupabaseWorkspaceService } from "./features/workspace/service";
@@ -80,9 +103,14 @@ export default function App({
   const [memberId, setMemberId] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [handoffs, setHandoffs] = useState<HandoffRecord[]>([]);
+  const [transfers, setTransfers] = useState<TransferRecord[]>([]);
+  const [v2LoadFailed, setV2LoadFailed] = useState(false);
   const [inbox, setInbox] = useState<InboxLocalEntry[]>([]);
   const [pickedFile, setPickedFile] = useState<PickedFile | null>(null);
   const [sendProgress, setSendProgress] = useState<SendProgress>("idle");
+  const [localStates, setLocalStates] = useState<Record<string, LocalWorkState>>({});
+  const [reminderNotice, setReminderNotice] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [returningId, setReturningId] = useState<string | null>(null);
@@ -98,12 +126,22 @@ export default function App({
   const createLock = useRef(false);
   const joinLock = useRef(false);
   const sendLock = useRef(false);
+  const sendCancelledRef = useRef(false);
+  const sendProgressRef = useRef(sendProgress);
+  sendProgressRef.current = sendProgress;
+  const actionLock = useRef(new Set<string>());
+  const resumeLock = useRef(new Set<string>());
+  const commandIds = useRef(createCommandIdStore());
+  const invokeFn = invoke as unknown as InvokeFn;
   const seenIncoming = useRef<Set<string> | null>(null);
   const seenReturned = useRef<Set<string> | null>(null);
   const membersRef = useRef<WorkspaceMember[]>([]);
   const memberIdRef = useRef<string | null>(null);
   const handoffsRef = useRef<HandoffRecord[]>([]);
+  const transfersRef = useRef<TransferRecord[]>([]);
   const returnLock = useRef(new Set<string>());
+  const syncRef = useRef<ReturnType<typeof createHandoffSyncController> | null>(null);
+  const workspaceIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -144,23 +182,65 @@ export default function App({
   membersRef.current = members;
   memberIdRef.current = memberId;
   handoffsRef.current = handoffs;
+  transfersRef.current = transfers;
+  workspaceIdRef.current = workspace?.id ?? null;
+
+  async function applySnapshot(workspaceId: string) {
+    const snapshot = await handoffService.listHandoffSnapshot(workspaceId);
+    setHandoffs(snapshot.handoffs);
+    setTransfers(snapshot.transfers);
+    setV2LoadFailed(snapshot.v2LoadFailed);
+    return snapshot.handoffs;
+  }
+
+  async function reloadList() {
+    const workspaceId = workspaceIdRef.current;
+    if (workspaceId) {
+      return applySnapshot(workspaceId);
+    }
+    const list = await handoffService.listHandoffs();
+    setHandoffs(list);
+    return list;
+  }
 
   const reconciliation = useMemo(() => {
+    let statusInflight: Promise<HandoffRecord[]> | null = null;
     const registry = createReconciliationRegistry({
       async getCloudStatus(handoffId) {
-        const list = await handoffService.listHandoffs();
-        setHandoffs(list);
+        if (!statusInflight) {
+          statusInflight = (async () => {
+            const workspaceId = workspaceIdRef.current;
+            if (workspaceId) {
+              return applySnapshot(workspaceId);
+            }
+            const list = await handoffService.listHandoffs();
+            setHandoffs(list);
+            return list;
+          })().finally(() => {
+            statusInflight = null;
+          });
+        }
+        const list = await statusInflight;
         return list.find((row) => row.id === handoffId)?.status ?? null;
       },
       markModified: (handoffId) => handoffService.markModified(handoffId),
       markUnmodified: (handoffId) => handoffService.markUnmodified(handoffId),
       markOpened: (handoffId) => handoffService.markOpened(handoffId),
-      acknowledge: (handoffId, desiredStatus, generation) =>
-        invoke<boolean>("acknowledge_local_status_sync", {
+      acknowledge: async (handoffId, desiredStatus, generation) => {
+        const ok = await invoke<boolean>("acknowledge_local_status_sync", {
           handoffId,
           desiredStatus,
           generation,
-        }),
+        });
+        if (ok) {
+          try {
+            setInbox(await invoke<InboxLocalEntry[]>("inbox_local_state"));
+          } catch {
+            /* keep last inbox */
+          }
+        }
+        return ok;
+      },
       onActivity: () => {
         setReconcilingIds(registry.busyIds());
       },
@@ -199,21 +279,25 @@ export default function App({
   }, [phase, workspace, workspaceService, currentUserId]);
 
   useEffect(() => {
-    if (phase !== "ready" || !memberId) {
+    if (phase !== "ready" || !memberId || !workspace) {
       return;
     }
+    const workspaceId = workspace.id;
     let cancelled = false;
+    let firstSnapshot = true;
     seenIncoming.current = null;
     seenReturned.current = null;
 
     async function refresh(notifyNew: boolean) {
       try {
-        const list = await handoffService.listHandoffs();
+        const list = await applySnapshot(workspaceId);
         if (cancelled) {
           return;
         }
-        setHandoffs(list);
         for (const row of list) {
+          if ((row.flowVersion ?? 1) === 2 || !row.status) {
+            continue;
+          }
           if (row.recipientMemberId !== memberIdRef.current) {
             continue;
           }
@@ -230,8 +314,12 @@ export default function App({
           }
         }
         const localMemberId = memberIdRef.current;
-        const incoming = list.filter((row) => row.recipientMemberId === localMemberId);
-        const outgoing = list.filter((row) => row.senderMemberId === localMemberId);
+        const incoming = list.filter(
+          (row) => (row.flowVersion ?? 1) === 1 && row.recipientMemberId === localMemberId,
+        );
+        const outgoing = list.filter(
+          (row) => (row.flowVersion ?? 1) === 1 && row.senderMemberId === localMemberId,
+        );
         const incomingIds = new Set(incoming.map((row) => row.id));
         const returnedIds = new Set(
           outgoing
@@ -273,7 +361,17 @@ export default function App({
       }
     }
 
-    void refresh(false);
+    const sync = createHandoffSyncController({
+      requiredChannels: ["incoming", "outgoing", "events"],
+      snapshot: async () => {
+        const notifyNew = !firstSnapshot;
+        firstSnapshot = false;
+        await refresh(notifyNew);
+      },
+    });
+    syncRef.current = sync;
+    sync.start();
+
     void invoke<InboxLocalEntry[]>("inbox_local_state")
       .then((entries) => {
         if (!cancelled) {
@@ -282,24 +380,45 @@ export default function App({
       })
       .catch(() => undefined);
 
-    const stopIncoming = handoffService.subscribeToIncomingHandoffs(memberId, () => {
-      void refresh(true);
-      window.setTimeout(() => {
-        void refresh(true);
-      }, 500);
-    });
-    const stopOutgoing = handoffService.subscribeToOutgoingHandoffs(memberId, () => {
-      void refresh(true);
-      window.setTimeout(() => {
-        void refresh(true);
-      }, 500);
-    });
+    const stopIncoming = handoffService.subscribeToIncomingHandoffs(
+      memberId,
+      () => {
+        sync.notifySignal();
+      },
+      {
+        onSubscribed: () => sync.markSubscribed("incoming"),
+        onDisconnected: () => sync.markUnsubscribed("incoming"),
+      },
+    );
+    const stopOutgoing = handoffService.subscribeToOutgoingHandoffs(
+      memberId,
+      () => {
+        sync.notifySignal();
+      },
+      {
+        onSubscribed: () => sync.markSubscribed("outgoing"),
+        onDisconnected: () => sync.markUnsubscribed("outgoing"),
+      },
+    );
+    const stopEvents = handoffService.subscribeToHandoffEvents(
+      memberId,
+      (eventId) => {
+        sync.notifyEvent(eventId);
+      },
+      {
+        onSubscribed: () => sync.markSubscribed("events"),
+        onDisconnected: () => sync.markUnsubscribed("events"),
+      },
+    );
     return () => {
       cancelled = true;
+      sync.stop();
+      syncRef.current = null;
       stopIncoming();
       stopOutgoing();
+      stopEvents();
     };
-  }, [phase, memberId, handoffService, reconciliation]);
+  }, [phase, memberId, workspace, handoffService, reconciliation]);
 
   useEffect(() => {
     if (phase !== "ready") {
@@ -341,13 +460,15 @@ export default function App({
           return;
         }
         setInbox(local);
-        const list = await handoffService.listHandoffs();
+        const list = await reloadList();
         if (cancelled) {
           return;
         }
-        setHandoffs(list);
         const mine = memberIdRef.current;
         for (const row of list) {
+          if ((row.flowVersion ?? 1) === 2 || !row.status) {
+            continue;
+          }
           if (row.recipientMemberId !== mine) {
             continue;
           }
@@ -404,12 +525,20 @@ export default function App({
   }, [phase, memberId, handoffService, reconciliation]);
 
   useEffect(() => {
+    if (phase !== "ready" || !workspace) {
+      return;
+    }
+    void recoverAllResumes();
+  }, [phase, workspace, handoffService]);
+
+  useEffect(() => {
     if (phase !== "ready") {
       return;
     }
     function retry() {
       reconciliation.retryAll();
       void invoke("recheck_all_inbox_files");
+      syncRef.current?.retry();
     }
     function onVisibility() {
       if (document.visibilityState === "visible") {
@@ -585,15 +714,72 @@ export default function App({
   }
 
   async function onCancelSend() {
+    const inFlight =
+      sendProgressRef.current === "sending" ||
+      sendProgressRef.current === "uploading" ||
+      sendProgressRef.current === "finalizing";
+    if (inFlight) {
+      sendCancelledRef.current = true;
+      try {
+        const listed = await invoke<ResumeSummary[]>("list_resume_uploads");
+        const inflight = listed.find((row) => row.kind === "initial");
+        if (inflight) {
+          await abortResumeRecord({
+            service: handoffService,
+            invoke: invokeFn,
+            commands: commandIds.current,
+            summary: inflight,
+            pendingStoragePath: pendingPathForResume(inflight),
+            stillOpen: true,
+          });
+        }
+      } catch (cause) {
+        setError(cloudErrorLabel(cloudErrorCode(cause)));
+      }
+    }
     await clearSelection(pickedFile?.selectionId ?? null);
     setPickedFile(null);
     setSendProgress("idle");
+    if (inFlight) {
+      await reloadList();
+    }
+  }
+
+  function setLocal(handoffId: string, state: LocalWorkState) {
+    setLocalStates((current) => ({ ...current, [handoffId]: state }));
+  }
+
+  function clearLocal(handoffId: string) {
+    setLocalStates((current) => {
+      const next = { ...current };
+      delete next[handoffId];
+      return next;
+    });
+  }
+
+  function pendingPathForResume(summary: ResumeSummary): string | null {
+    const hop =
+      transfersRef.current.find((row) => row.id === summary.transferId) ??
+      transfersRef.current.find((row) => row.handoffId === summary.handoffId);
+    return hop?.pendingStoragePath ?? null;
+  }
+
+  function transferViewFor(handoff: HandoffRecord) {
+    const projected = projectHandoffList(
+      [handoff],
+      transfersRef.current.filter((hop) => hop.handoffId === handoff.id),
+      memberIdRef.current,
+      (id) => membersRef.current.find((member) => member.id === id)?.displayName ?? "",
+    );
+    const card = projected.cards[0];
+    return card?.source.kind === "transfer" ? card.source : null;
   }
 
   async function onSubmitSend(input: {
     recipientMemberId: string;
     instruction: string;
     dueOn: string | null;
+    requestedAction?: SendAction;
   }) {
     if (sendLock.current) {
       return;
@@ -603,51 +789,73 @@ export default function App({
       return;
     }
     sendLock.current = true;
+    sendCancelledRef.current = false;
     setSendProgress("sending");
     setError(null);
-    let createdId: string | null = null;
     try {
-      const created = await handoffService.createHandoffWithContext(
-        input.recipientMemberId,
-        picked.originalFilename,
-        input.instruction,
-        input.dueOn,
-      );
-      createdId = created.handoffId;
-      try {
-        const accessToken = await handoffService.currentAccessToken();
-        await invoke("tus_upload_v1", {
-          selectionId: picked.selectionId,
-          accessToken,
-          handoffId: created.handoffId,
-          objectId: created.objectId,
-          storagePath: created.storagePath,
-        });
-        await handoffService.finalizeHandoffV1(
-          created.handoffId,
-          created.objectId,
-          picked.size,
-          picked.blake3,
-        );
-        setSendProgress("sent");
-        setHandoffs(await handoffService.listHandoffs());
-      } catch (afterCreate) {
-        try {
-          await handoffService.failHandoff(created.handoffId);
-        } catch {
-          /* keep the original send error */
-        }
-        throw afterCreate;
-      } finally {
+      await sendHandoffV2({
+        service: handoffService,
+        invoke: invokeFn,
+        commands: commandIds.current,
+        recipientMemberId: input.recipientMemberId,
+        picked,
+        requestedAction: input.requestedAction ?? "approval",
+        instruction: input.instruction,
+        dueOn: input.dueOn,
+        onState(state) {
+          if (state === "sending") {
+            setSendProgress("sending");
+          } else if (state === "uploading") {
+            setSendProgress("uploading");
+          } else if (state === "finalizing") {
+            setSendProgress("finalizing");
+          }
+        },
+      });
+      setSendProgress("sent");
+      await clearSelection(picked.selectionId);
+      setPickedFile(null);
+      await reloadList();
+    } catch (cause) {
+      if (sendCancelledRef.current) {
+        setSendProgress("idle");
+        return;
+      }
+      const code = cloudErrorCode(cause);
+      if (code !== "handoff_create_failed") {
         await clearSelection(picked.selectionId);
         setPickedFile(null);
       }
-    } catch (cause) {
-      if (createdId) {
-        setPickedFile(null);
-      }
-      const code = cloudErrorCode(cause);
       setError(code === "file_too_large" ? he.fileTooLarge : cloudErrorLabel(code));
+      setSendProgress("failed");
+    } finally {
+      sendLock.current = false;
+    }
+  }
+
+  async function onSubmitFileRequest(input: {
+    recipientMemberId: string;
+    instruction: string;
+    dueOn: string | null;
+  }) {
+    if (sendLock.current) {
+      return;
+    }
+    sendLock.current = true;
+    setSendProgress("sending");
+    setError(null);
+    try {
+      await createFileRequest({
+        service: handoffService,
+        commands: commandIds.current,
+        recipientMemberId: input.recipientMemberId,
+        instruction: input.instruction,
+        dueOn: input.dueOn,
+      });
+      setSendProgress("sent");
+      await reloadList();
+    } catch (cause) {
+      setError(cloudErrorLabel(cloudErrorCode(cause)));
       setSendProgress("failed");
     } finally {
       sendLock.current = false;
@@ -690,7 +898,7 @@ export default function App({
       });
       await handoffService.markOpened(handoff.id);
       setInbox(await invoke<InboxLocalEntry[]>("inbox_local_state"));
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
     } catch (cause) {
       setError(cloudErrorLabel(cloudErrorCode(cause)));
     } finally {
@@ -715,6 +923,7 @@ export default function App({
     setError(null);
     let snapshotId: string | null = null;
     let began = false;
+    reconciliation.stop(handoff.id);
     try {
       const prepared = await invoke<PreparedReturnSnapshot>("prepare_return_snapshot", {
         handoffId: handoff.id,
@@ -722,7 +931,6 @@ export default function App({
       snapshotId = prepared.returnSnapshotId;
       const started = await handoffService.beginReturnNext(handoff.id);
       began = true;
-      reconciliation.stop(handoff.id);
       const accessToken = await handoffService.currentAccessToken();
       await invoke("tus_upload_v2", {
         returnSnapshotId: prepared.returnSnapshotId,
@@ -747,7 +955,7 @@ export default function App({
       });
       snapshotId = null;
       await invoke("stop_inbox_watch", { handoffId: handoff.id });
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
       setInbox(await invoke<InboxLocalEntry[]>("inbox_local_state"));
     } catch (cause) {
       const code = cloudErrorCode(cause);
@@ -764,12 +972,12 @@ export default function App({
         } catch {
           /* keep original */
         }
-        reconciliation.resume(handoff.id);
-        try {
-          await invoke("recheck_inbox_file", { handoffId: handoff.id });
-        } catch {
-          /* watcher may still be running */
-        }
+      }
+      reconciliation.resume(handoff.id);
+      try {
+        await invoke("recheck_inbox_file", { handoffId: handoff.id });
+      } catch {
+        /* watcher may still be running */
       }
       setError(
         code === "file_busy"
@@ -778,7 +986,7 @@ export default function App({
             ? he.fileChangedDuringReturn
             : cloudErrorLabel(code),
       );
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
     } finally {
       returnLock.current.delete(handoff.id);
       setReturningId(null);
@@ -809,7 +1017,7 @@ export default function App({
         version: versionLabel(version.versionNumber),
       });
       setInbox(await invoke<InboxLocalEntry[]>("inbox_local_state"));
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
     } catch (cause) {
       setError(cloudErrorLabel(cloudErrorCode(cause)));
     } finally {
@@ -821,7 +1029,7 @@ export default function App({
     setError(null);
     try {
       await handoffService.completeHandoff(handoff.id);
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
     } catch (cause) {
       setError(cloudErrorLabel(cloudErrorCode(cause)));
     }
@@ -831,10 +1039,317 @@ export default function App({
     setError(null);
     try {
       await handoffService.requestRevision(handoff.id, note);
-      setHandoffs(await handoffService.listHandoffs());
+      await reloadList();
     } catch (cause) {
       setError(cloudErrorLabel(cloudErrorCode(cause)));
     }
+  }
+
+  async function runLocked(handoffId: string, work: () => Promise<void>) {
+    if (actionLock.current.has(handoffId)) {
+      return;
+    }
+    actionLock.current.add(handoffId);
+    setActionBusyId(handoffId);
+    setError(null);
+    try {
+      await work();
+    } finally {
+      actionLock.current.delete(handoffId);
+      setActionBusyId((current) => (current === handoffId ? null : current));
+    }
+  }
+
+  async function onOpenV2(handoff: HandoffRecord) {
+    await runLocked(handoff.id, async () => {
+      setDownloadingId(handoff.id);
+      try {
+        await openRootTransfer({
+          service: handoffService,
+          invoke: invokeFn,
+          commands: commandIds.current,
+          handoff,
+          memberId: memberIdRef.current,
+          source: transferViewFor(handoff),
+        });
+        setInbox(await invoke<InboxLocalEntry[]>("inbox_local_state"));
+        await reloadList();
+      } catch (cause) {
+        setError(cloudErrorLabel(cloudErrorCode(cause)));
+      } finally {
+        setDownloadingId(null);
+      }
+    });
+  }
+
+  async function submitV2Result(
+    handoff: HandoffRecord,
+    rejected: boolean,
+    note: string | null,
+  ) {
+    await runLocked(handoff.id, async () => {
+      const source = transferViewFor(handoff);
+      const requested = source?.activeHop?.requestedAction;
+      if (!requested || !source?.activeHop) {
+        return;
+      }
+      await invoke("recheck_inbox_file", { handoffId: handoff.id }).catch(() => undefined);
+      const inboxState = await invoke<InboxLocalEntry[]>("inbox_local_state");
+      const working = inboxState.find((entry) => entry.handoffId === handoff.id);
+      if (working?.pendingRecheck) {
+        setError(he.fileBusy);
+        return;
+      }
+      const changed = Boolean(working?.contentDiffersFromV1);
+      const resultAction: ResultAction = resultActionForRequest(requested, changed, rejected);
+      if ((resultAction === "rejected" || resultAction === "returned_with_reply") && !note?.trim()) {
+        setError(resultAction === "returned_with_reply" ? he.replyRequired : he.resultNoteRequired);
+        return;
+      }
+      try {
+        if (!changed) {
+          await submitWithoutFile({
+            service: handoffService,
+            commands: commandIds.current,
+            handoffId: handoff.id,
+            resultAction,
+            resultNote: note,
+          });
+        } else {
+          setLocal(handoff.id, "sending");
+          const prepared = await invoke<PreparedResultSnapshot>(
+            "prepare_result_snapshot_from_working_file",
+            {
+              handoffId: handoff.id,
+              transferId: source.activeHop.id,
+            },
+          );
+          const inboxAfterPrepare = await invoke<InboxLocalEntry[]>("inbox_local_state");
+          const prepareGeneration = inboxGenerationFor(inboxAfterPrepare, handoff.id);
+          await submitWithFile({
+            service: handoffService,
+            invoke: invokeFn,
+            commands: commandIds.current,
+            handoffId: handoff.id,
+            transferId: source.activeHop.id,
+            intent: { resultAction, resultNote: note },
+            snapshot: prepared,
+            async changedDuringUpload() {
+              const latest = await invoke<InboxLocalEntry[]>("inbox_local_state");
+              return workingFileChangedAfterPrepare(latest, handoff.id, prepareGeneration);
+            },
+            onState: (state) => setLocal(handoff.id, state),
+          });
+        }
+        clearLocal(handoff.id);
+        await reloadList();
+      } catch (cause) {
+        const code = cloudErrorCode(cause);
+        if (code === "file_changed_during_upload") {
+          setLocal(handoff.id, "file_changed");
+        } else if (code === "cloud_unavailable") {
+          setLocal(handoff.id, "offline");
+        }
+        setError(code === "file_busy" ? he.fileBusy : cloudErrorLabel(code));
+      }
+    });
+  }
+
+  async function onAttachFileRequest(handoff: HandoffRecord) {
+    await runLocked(handoff.id, async () => {
+      const source = transferViewFor(handoff);
+      if (!source?.activeHop) {
+        return;
+      }
+      try {
+        const picked = await invoke<PickedFile | null>("pick_send_file");
+        if (!picked) {
+          return;
+        }
+        setLocal(handoff.id, "sending");
+        await attachFileRequest({
+          service: handoffService,
+          invoke: invokeFn,
+          commands: commandIds.current,
+          handoffId: handoff.id,
+          transferId: source.activeHop.id,
+          picked,
+          onState: (state) => setLocal(handoff.id, state),
+        });
+        await clearSelection(picked.selectionId);
+        clearLocal(handoff.id);
+        await reloadList();
+      } catch (cause) {
+        const code = cloudErrorCode(cause);
+        setLocal(handoff.id, code === "cloud_unavailable" ? "offline" : "retry");
+        setError(cloudErrorLabel(code));
+      }
+    });
+  }
+
+  async function onAcceptV2(handoff: HandoffRecord) {
+    await runLocked(handoff.id, async () => {
+      try {
+        const id = commandIds.current.id("accept_root_transfer_result", handoff.id);
+        await handoffService.acceptRootTransferResult(handoff.id, id);
+        await reloadList();
+      } catch (cause) {
+        setError(cloudErrorLabel(cloudErrorCode(cause)));
+      }
+    });
+  }
+
+  async function onRevisionV2(handoff: HandoffRecord, note: string) {
+    await runLocked(handoff.id, async () => {
+      try {
+        const id = commandIds.current.id("request_root_transfer_revision", handoff.id);
+        await handoffService.requestRootTransferRevision(handoff.id, note, id);
+        await reloadList();
+      } catch (cause) {
+        setError(cloudErrorLabel(cloudErrorCode(cause)));
+      }
+    });
+  }
+
+  async function onRemind(handoff: HandoffRecord) {
+    await runLocked(`remind:${handoff.id}`, async () => {
+      const command = "send_transfer_reminder";
+      try {
+        const id = commandIds.current.id(command, handoff.id);
+        await handoffService.sendTransferReminder(handoff.id, id);
+        commandIds.current.forget(command, handoff.id);
+        setReminderNotice(he.reminderSent);
+        window.setTimeout(() => {
+          setReminderNotice((current) => (current === he.reminderSent ? null : current));
+        }, 2500);
+        await reloadList();
+      } catch (cause) {
+        const code = cloudErrorCode(cause);
+        if (code !== "cloud_unavailable") {
+          commandIds.current.forget(command, handoff.id);
+        }
+        setError(code === "reminder_cooldown" ? he.reminderCooldown : cloudErrorLabel(code));
+      }
+    });
+  }
+
+  async function onCancelV2(handoff: HandoffRecord) {
+    await runLocked(handoff.id, async () => {
+      try {
+        const listed = await invoke<ResumeSummary[]>("list_resume_uploads");
+        const resume = listed.find((row) => row.handoffId === handoff.id);
+        if (resume) {
+          setLocal(handoff.id, "aborting");
+          await abortResumeRecord({
+            service: handoffService,
+            invoke: invokeFn,
+            commands: commandIds.current,
+            summary: resume,
+            pendingStoragePath: pendingPathForResume(resume),
+            stillOpen: true,
+          });
+        } else {
+          const cancelId = commandIds.current.id("cancel_root_handoff_v2", handoff.id);
+          await handoffService.cancelRootHandoffV2(handoff.id, cancelId);
+        }
+        clearLocal(handoff.id);
+        await reloadList();
+      } catch (cause) {
+        const code = cloudErrorCode(cause);
+        setLocal(handoff.id, code === "cloud_unavailable" ? "offline" : "retry");
+        setError(cloudErrorLabel(code));
+      }
+    });
+  }
+
+  async function recoverAllResumes() {
+    const workspaceId = workspaceIdRef.current;
+    if (!workspaceId) {
+      return;
+    }
+    try {
+      await reloadList();
+    } catch {
+      /* match against whatever is already loaded */
+    }
+    let listed: ResumeSummary[] = [];
+    try {
+      const raw = await invoke<ResumeSummary[]>("list_resume_uploads");
+      listed = Array.isArray(raw) ? raw : [];
+    } catch {
+      return;
+    }
+    for (const summary of listed) {
+      if (resumeLock.current.has(summary.objectId)) {
+        continue;
+      }
+      resumeLock.current.add(summary.objectId);
+      void (async () => {
+        try {
+          setLocal(summary.handoffId, "resuming");
+          const handoff =
+            handoffsRef.current.find((row) => row.id === summary.handoffId) ?? null;
+          await recoverResumeRecord({
+            service: handoffService,
+            invoke: invokeFn,
+            commands: commandIds.current,
+            summary,
+            pendingStoragePath: pendingPathForResume(summary),
+            handoff,
+            onState: (state) => setLocal(summary.handoffId, state),
+            async pickReplacement() {
+              return invoke<PickedFile | null>("pick_send_file");
+            },
+          });
+          clearLocal(summary.handoffId);
+          await reloadList();
+        } catch (cause) {
+          const code = cloudErrorCode(cause);
+          setLocal(
+            summary.handoffId,
+            code === "resume_snapshot_required"
+              ? "waiting_reselect"
+              : code === "cloud_unavailable"
+                ? "offline"
+                : "retry",
+          );
+        } finally {
+          resumeLock.current.delete(summary.objectId);
+        }
+      })();
+    }
+  }
+
+  async function onRetryLocal(handoffId: string) {
+    await recoverAllResumes();
+    if (localStates[handoffId] === "retry" || localStates[handoffId] === "offline") {
+      clearLocal(handoffId);
+    }
+  }
+
+  async function onAbortLocal(handoffId: string) {
+    await runLocked(handoffId, async () => {
+      const listed = await invoke<ResumeSummary[]>("list_resume_uploads");
+      const resume = listed.find((row) => row.handoffId === handoffId);
+      if (!resume) {
+        return;
+      }
+      setLocal(handoffId, "aborting");
+      await abortResumeRecord({
+        service: handoffService,
+        invoke: invokeFn,
+        commands: commandIds.current,
+        summary: resume,
+        pendingStoragePath: pendingPathForResume(resume),
+      });
+      clearLocal(handoffId);
+      await reloadList();
+    });
+  }
+
+  async function onRestoreSnapshot(handoffId: string) {
+    await recoverAllResumes();
+    void handoffId;
   }
 
   async function onToggleAutostart(enabled: boolean) {
@@ -897,6 +1412,11 @@ export default function App({
         error={error}
         onRotateJoinCode={onRotateJoinCode}
         handoffs={handoffs}
+        transfers={transfers}
+        v2LoadFailed={v2LoadFailed}
+        onRetryLoad={() => {
+          syncRef.current?.retry();
+        }}
         inbox={inbox}
         pickedFile={pickedFile}
         sendProgress={sendProgress}
@@ -909,12 +1429,30 @@ export default function App({
         onPickFile={onPickFile}
         onCancelSend={onCancelSend}
         onSubmitSend={onSubmitSend}
+        onSubmitFileRequest={onSubmitFileRequest}
         onDownloadAndOpen={onDownloadAndOpen}
         onOpenLatest={onOpenLatest}
         onOpenFolder={onOpenFolder}
         onReturnFile={onReturnFile}
         onCompleteHandoff={onCompleteHandoff}
         onRequestRevision={onRequestRevision}
+        onOpenV2={onOpenV2}
+        onApprove={(handoff, note) => submitV2Result(handoff, false, note)}
+        onReject={(handoff, note) => submitV2Result(handoff, true, note)}
+        onFinishReview={(handoff, note) => submitV2Result(handoff, false, note)}
+        onReturnUpdate={(handoff, note) => submitV2Result(handoff, false, note)}
+        onAttachFileRequest={onAttachFileRequest}
+        onCannotProvide={(handoff, note) => submitV2Result(handoff, true, note)}
+        onAcceptV2={onAcceptV2}
+        onRevisionV2={onRevisionV2}
+        onRemind={onRemind}
+        onCancelV2={onCancelV2}
+        onRetryLocal={onRetryLocal}
+        onAbortLocal={onAbortLocal}
+        onRestoreSnapshot={onRestoreSnapshot}
+        localStates={localStates}
+        reminderNotice={reminderNotice}
+        actionBusyId={actionBusyId}
       />
     );
   }

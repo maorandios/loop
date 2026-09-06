@@ -58,4 +58,30 @@ describe("reconciliation stop statuses", () => {
       expect(markModified).toHaveBeenCalledWith("handoff-1");
     });
   });
+
+  it("does not refetch when a later notify repeats the same generation", async () => {
+    const getCloudStatus = vi.fn(async () => "modified" as const);
+    const acknowledge = vi.fn(async () => true);
+    const registry = createReconciliationRegistry({
+      getCloudStatus,
+      markModified: async () => undefined,
+      markUnmodified: async () => undefined,
+      markOpened: async () => undefined,
+      acknowledge,
+    });
+    const event = {
+      handoffId: "handoff-1",
+      generation: 3,
+      contentDiffersFromV1: true,
+      desiredStatus: "modified" as const,
+      pendingRecheck: false,
+    };
+    registry.notify(event);
+    await vi.waitFor(() => {
+      expect(acknowledge).toHaveBeenCalledTimes(1);
+    });
+    registry.notify(event);
+    await Promise.resolve();
+    expect(getCloudStatus).toHaveBeenCalledTimes(1);
+  });
 });

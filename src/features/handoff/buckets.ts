@@ -79,6 +79,9 @@ export function groupHandoffsByView(
     done: [],
   };
   for (const row of rows) {
+    if ((row.flowVersion ?? 1) === 2 || !row.status) {
+      continue;
+    }
     const role = handoffRole(row, memberId);
     if (!role) {
       continue;

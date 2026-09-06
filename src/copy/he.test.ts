@@ -46,7 +46,7 @@ describe("handoff status mapping", () => {
   it("does not include transfer percentages", () => {
     const allCopy = JSON.stringify(he);
     expect(allCopy).not.toMatch(/\d+%/);
-    expect(allCopy).not.toContain("מעלה");
+    expect(he.uploadingFile).toBe("מעלה את הקובץ…");
   });
 });
 
@@ -84,6 +84,16 @@ describe("cloud error mapping", () => {
     expect(he.joinWorkspace).toBe("הצטרף לצוות");
     expect(he.workspaceReadyTitle).toBe("הצוות מוכן");
     expect(he.waitingForMembers).toBe("ממתין לחברים נוספים");
+    expect(he.waitingForMe).toBe("לטיפולי");
+    expect(he.waitingForOthers).toBe("במעקב");
+    expect(he.done).toBe("הושלמו");
+    expect(he.partialRequestsFailed).toBe("חלק מהבקשות לא נטענו. נסה שוב.");
+    expect(he.requestCompleted).toBe("הבקשה הושלמה");
+    expect(he.requestCancelled).toBe("הבקשה בוטלה");
+    expect(he.sendIncomplete).toBe("השליחה לא הושלמה");
+    expect(`${he.resultWaitingYourReview}${he.resultWaitingTheirReview}${he.resultWaitingNamedReview}`).not.toMatch(
+      /החזיר|החזירה|ביקש|ביקשה/,
+    );
     expect(he.joiningWorkspace).toBe("מתחבר לצוות…");
     expect(he.thisComputer).toBe("זה המחשב הזה");
     expect(he.tryAgain).toBe("נסה שוב");

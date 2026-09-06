@@ -118,15 +118,24 @@ describe.each(["supabase/manual-setup.sql", "supabase/manual-patch-m6.sql"] as c
       const source = sql();
       const handoffs =
         source.match(/CREATE POLICY handoffs_select_participant[\s\S]*?;/)?.[0] ?? "";
-      expect(handoffs).toContain("handoffs.sender_member_id");
-      expect(handoffs).toContain("handoffs.recipient_member_id");
-      expect(handoffs).toContain("handoffs.status");
+      if (relativePath.includes("manual-setup.sql")) {
+        expect(handoffs).toContain("private.handoff_readable(id)");
+      } else {
+        expect(handoffs).toContain("handoffs.sender_member_id");
+        expect(handoffs).toContain("handoffs.recipient_member_id");
+        expect(handoffs).toContain("handoffs.status");
+      }
       const versions =
         source.match(/CREATE POLICY handoff_versions_select_participant[\s\S]*?;/)?.[0] ?? "";
-      expect(versions).toContain("handoff_versions.handoff_id");
       const events =
         source.match(/CREATE POLICY handoff_events_select_participant[\s\S]*?;/)?.[0] ?? "";
-      expect(events).toContain("handoff_events.handoff_id");
+      if (relativePath.includes("manual-setup.sql")) {
+        expect(versions).toContain("private.handoff_readable(handoff_id)");
+        expect(events).toContain("private.handoff_readable(handoff_id)");
+      } else {
+        expect(versions).toContain("handoff_versions.handoff_id");
+        expect(events).toContain("handoff_events.handoff_id");
+      }
     });
   },
 );
@@ -136,6 +145,7 @@ describe("handoff client source", () => {
     const service = read("src/features/handoff/service.ts");
     const app = read("src/App.tsx");
     const transfer = read("src-tauri/src/transfer.rs").split("#[cfg(test)]")[0] ?? "";
+    const tus = read("src-tauri/src/tus.rs").split("#[cfg(test)]")[0] ?? "";
     const build = read("src-tauri/build.rs");
     expect(service).not.toMatch(/console\.(log|debug|info|warn|error)/);
     expect(app).not.toMatch(/console\.(log|debug|info|warn|error)/);
@@ -148,6 +158,7 @@ describe("handoff client source", () => {
     expect(app).toContain("accessToken");
     expect(app).not.toContain("signedUploadToken");
     expect(app).toContain("subscribeToIncomingHandoffs");
+    expect(app).toContain("subscribeToHandoffEvents");
     expect(app).toContain("subscribeToOutgoingHandoffs");
     expect(read("src/features/workspace/WorkspaceReadyScreen.tsx")).not.toContain(
       "signedUploadToken",
@@ -155,7 +166,7 @@ describe("handoff client source", () => {
     expect(read("src/features/workspace/WorkspaceReadyScreen.tsx")).not.toContain(
       "signedUrl",
     );
-    expect(transfer).toContain("Authorization");
+    expect(tus).toContain("Authorization");
     expect(transfer).not.toContain("x-signature");
     expect(transfer).not.toContain("reqwest::blocking");
     expect(transfer).toContain("async fn tus_upload_v1");

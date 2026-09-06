@@ -4,8 +4,10 @@ mod copy;
 mod identity;
 mod inbox;
 mod paths;
+mod resume;
 mod state;
 mod transfer;
+mod tus;
 mod watch;
 
 use copy::HE;
@@ -86,6 +88,18 @@ pub fn run() {
             transfer::pick_send_file,
             transfer::cancel_send_selection,
             transfer::tus_upload_v1,
+            transfer::prepare_result_snapshot_from_selection,
+            transfer::prepare_result_snapshot_from_working_file,
+            transfer::tus_upload_initial_v2,
+            transfer::tus_upload_result,
+            transfer::tus_abort_resume,
+            transfer::mark_resume_storage_removed,
+            transfer::ack_resume_finalized,
+            transfer::ack_resume_aborted,
+            transfer::update_resume_reservation_expiry,
+            transfer::list_resume_uploads,
+            transfer::resume_tus_upload,
+            transfer::restore_resume_snapshot_from_selection,
             transfer::download_inbox,
             transfer::open_inbox_file,
             transfer::reveal_inbox_folder,

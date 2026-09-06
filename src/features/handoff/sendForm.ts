@@ -17,6 +17,22 @@ export type SendFormError =
 
 export type RevisionNoteError = "revision_note_required" | "revision_note_too_long";
 
+export type FileRequestFormInput = {
+  recipientMemberId: string | null;
+  instruction: string;
+};
+
+export function validateInstruction(instruction: string): SendFormError | null {
+  const trimmed = instruction.trim();
+  if (trimmed.length < INSTRUCTION_MIN) {
+    return "instruction_required";
+  }
+  if (trimmed.length > INSTRUCTION_MAX) {
+    return "instruction_too_long";
+  }
+  return null;
+}
+
 export function validateSendForm(input: SendFormInput): SendFormError | null {
   if (!input.recipientMemberId) {
     return "recipient_required";
@@ -24,14 +40,14 @@ export function validateSendForm(input: SendFormInput): SendFormError | null {
   if (!input.picked) {
     return "file_required";
   }
-  const instruction = input.instruction.trim();
-  if (instruction.length < INSTRUCTION_MIN) {
-    return "instruction_required";
+  return validateInstruction(input.instruction);
+}
+
+export function validateFileRequestForm(input: FileRequestFormInput): SendFormError | null {
+  if (!input.recipientMemberId) {
+    return "recipient_required";
   }
-  if (instruction.length > INSTRUCTION_MAX) {
-    return "instruction_too_long";
-  }
-  return null;
+  return validateInstruction(input.instruction);
 }
 
 export function validateRevisionNote(note: string): RevisionNoteError | null {

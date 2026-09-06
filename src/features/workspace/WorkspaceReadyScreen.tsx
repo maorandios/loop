@@ -1,31 +1,42 @@
 import { useMemo, useState } from "react";
 import { LtrValue } from "../../components/LtrValue";
 import {
-  handoffStatusLabel,
   he,
   returnFileToLabel,
 } from "../../copy/he";
 import { formatLocalDateTime } from "../../lib/dates";
-import {
-  groupHandoffsByView,
-  handoffRole,
-  viewCounts,
-  type HandoffView,
-} from "../handoff/buckets";
+import { handoffRole } from "../handoff/buckets";
 import { visibleHistory } from "../handoff/history";
 import { canReturnFile } from "../handoff/reconciliation";
+import { projectHandoffList } from "../handoff/view";
+import {
+  canCancelV2,
+  canOpenV2,
+  canRemind,
+  cardRequestedAction,
+  isFileRequestWithoutVersion,
+  recipientPrimaryAction,
+  senderReturnActions,
+  workingFileChanged,
+} from "../handoff/actions";
 import {
   INSTRUCTION_MAX,
   REVISION_NOTE_MAX,
   normalizeDueOn,
+  validateFileRequestForm,
   validateRevisionNote,
   validateSendForm,
 } from "../handoff/sendForm";
 import type {
+  FormMode,
   HandoffRecord,
+  HandoffSection,
   InboxLocalEntry,
+  LocalWorkState,
   PickedFile,
+  SendAction,
   SendProgress,
+  TransferRecord,
 } from "../handoff/types";
 import { latestHandoffVersion, versionLabel } from "../handoff/versions";
 import type { Workspace, WorkspaceMember } from "./types";
@@ -42,6 +53,9 @@ type WorkspaceReadyScreenProps = {
   error?: string | null;
   onRotateJoinCode?: () => void | Promise<void>;
   handoffs?: HandoffRecord[];
+  transfers?: TransferRecord[];
+  v2LoadFailed?: boolean;
+  onRetryLoad?: () => void | Promise<void>;
   inbox?: InboxLocalEntry[];
   pickedFile?: PickedFile | null;
   sendProgress?: SendProgress;
@@ -57,6 +71,12 @@ type WorkspaceReadyScreenProps = {
     recipientMemberId: string;
     instruction: string;
     dueOn: string | null;
+    requestedAction: SendAction;
+  }) => void | Promise<void>;
+  onSubmitFileRequest?: (input: {
+    recipientMemberId: string;
+    instruction: string;
+    dueOn: string | null;
   }) => void | Promise<void>;
   onDownloadAndOpen?: (handoff: HandoffRecord) => void | Promise<void>;
   onOpenLatest?: (handoff: HandoffRecord) => void | Promise<void>;
@@ -64,6 +84,23 @@ type WorkspaceReadyScreenProps = {
   onReturnFile?: (handoff: HandoffRecord) => void | Promise<void>;
   onCompleteHandoff?: (handoff: HandoffRecord) => void | Promise<void>;
   onRequestRevision?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
+  onOpenV2?: (handoff: HandoffRecord) => void | Promise<void>;
+  onApprove?: (handoff: HandoffRecord, note: string | null) => void | Promise<void>;
+  onReject?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
+  onFinishReview?: (handoff: HandoffRecord, note: string | null) => void | Promise<void>;
+  onReturnUpdate?: (handoff: HandoffRecord, note: string | null) => void | Promise<void>;
+  onAttachFileRequest?: (handoff: HandoffRecord) => void | Promise<void>;
+  onCannotProvide?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
+  onAcceptV2?: (handoff: HandoffRecord) => void | Promise<void>;
+  onRevisionV2?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
+  onRemind?: (handoff: HandoffRecord) => void | Promise<void>;
+  onCancelV2?: (handoff: HandoffRecord) => void | Promise<void>;
+  onRetryLocal?: (handoffId: string) => void | Promise<void>;
+  onAbortLocal?: (handoffId: string) => void | Promise<void>;
+  onRestoreSnapshot?: (handoffId: string) => void | Promise<void>;
+  localStates?: Record<string, LocalWorkState>;
+  reminderNotice?: string | null;
+  actionBusyId?: string | null;
 };
 
 function memberName(members: WorkspaceMember[], memberId: string): string {
@@ -98,23 +135,23 @@ function formatDueOn(dueOn: string): string {
   }).format(date);
 }
 
-const VIEWS: HandoffView[] = ["waiting_for_me", "waiting_for_others", "done"];
+const VIEWS: HandoffSection[] = ["mine", "watching", "done"];
 
-function viewLabel(view: HandoffView): string {
-  if (view === "waiting_for_me") {
+function viewLabel(view: HandoffSection): string {
+  if (view === "mine") {
     return he.waitingForMe;
   }
-  if (view === "waiting_for_others") {
+  if (view === "watching") {
     return he.waitingForOthers;
   }
   return he.done;
 }
 
-function emptyLabel(view: HandoffView): string {
-  if (view === "waiting_for_me") {
+function emptyLabel(view: HandoffSection): string {
+  if (view === "mine") {
     return he.noWaitingForMe;
   }
-  if (view === "waiting_for_others") {
+  if (view === "watching") {
     return he.noWaitingForOthers;
   }
   return he.noDoneFiles;
@@ -132,6 +169,9 @@ export function WorkspaceReadyScreen({
   error = null,
   onRotateJoinCode,
   handoffs = [],
+  transfers = [],
+  v2LoadFailed = false,
+  onRetryLoad,
   inbox = [],
   pickedFile = null,
   sendProgress = "idle",
@@ -144,12 +184,30 @@ export function WorkspaceReadyScreen({
   onPickFile,
   onCancelSend,
   onSubmitSend,
+  onSubmitFileRequest,
   onDownloadAndOpen,
   onOpenLatest,
   onOpenFolder,
   onReturnFile,
   onCompleteHandoff,
   onRequestRevision,
+  onOpenV2,
+  onApprove,
+  onReject,
+  onFinishReview,
+  onReturnUpdate,
+  onAttachFileRequest,
+  onCannotProvide,
+  onAcceptV2,
+  onRevisionV2,
+  onRemind,
+  onCancelV2,
+  onRetryLocal,
+  onAbortLocal,
+  onRestoreSnapshot,
+  localStates = {},
+  reminderNotice = null,
+  actionBusyId = null,
 }: WorkspaceReadyScreenProps) {
   const waiting = members.length < 2;
   const isCreator = currentUserId !== null && currentUserId === workspace.createdBy;
@@ -161,26 +219,37 @@ export function WorkspaceReadyScreen({
     return !isLocal;
   });
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<HandoffView>("waiting_for_me");
+  const [activeView, setActiveView] = useState<HandoffSection>("mine");
   const [recipientId, setRecipientId] = useState(others[0]?.id ?? "");
+  const [formMode, setFormMode] = useState<FormMode>("send");
+  const [requestedAction, setRequestedAction] = useState<SendAction>("approval");
   const [instruction, setInstruction] = useState("");
   const [dueOn, setDueOn] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+  const [resultNoteFor, setResultNoteFor] = useState<string | null>(null);
+  const [resultNote, setResultNote] = useState("");
+  const [resultNoteError, setResultNoteError] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState<string | null>(null);
   const [revisionFor, setRevisionFor] = useState<string | null>(null);
   const [revisionNote, setRevisionNote] = useState("");
   const [revisionError, setRevisionError] = useState<string | null>(null);
   const reconciling = new Set(reconcilingIds);
   const watchFailed = new Set(watchFailedIds);
-  const grouped = useMemo(
-    () => groupHandoffsByView(handoffs, currentMemberId),
-    [handoffs, currentMemberId],
+  const projected = useMemo(
+    () =>
+      projectHandoffList(
+        handoffs,
+        transfers,
+        currentMemberId,
+        (memberId) => memberName(members, memberId),
+        { v2LoadFailed },
+      ),
+    [handoffs, transfers, currentMemberId, members, v2LoadFailed],
   );
-  const counts = useMemo(
-    () => viewCounts(handoffs, currentMemberId),
-    [handoffs, currentMemberId],
-  );
+  const grouped = projected.grouped;
+  const counts = projected.counts;
   const visible = grouped[activeView];
+  const showLoadBanner = projected.inconsistent;
 
   async function onCopyJoinCode() {
     if (!joinCode) {
@@ -212,6 +281,23 @@ export function WorkspaceReadyScreen({
 
   function onSend() {
     const selected = recipientId || others[0]?.id || null;
+    if (formMode === "file_request") {
+      const problem = validateFileRequestForm({
+        recipientMemberId: selected,
+        instruction,
+      });
+      if (problem || !selected) {
+        setFormError(sendErrorLabel(problem));
+        return;
+      }
+      setFormError(null);
+      void onSubmitFileRequest?.({
+        recipientMemberId: selected,
+        instruction: instruction.trim(),
+        dueOn: normalizeDueOn(dueOn),
+      });
+      return;
+    }
     const problem = validateSendForm({
       recipientMemberId: selected,
       instruction,
@@ -226,6 +312,7 @@ export function WorkspaceReadyScreen({
       recipientMemberId: selected,
       instruction: instruction.trim(),
       dueOn: normalizeDueOn(dueOn),
+      requestedAction,
     });
   }
 
@@ -255,10 +342,43 @@ export function WorkspaceReadyScreen({
             {error ?? copyError ?? formError}
           </p>
         ) : null}
+        {reminderNotice ? (
+          <p role="status" className="text-sm text-zinc-700">
+            {reminderNotice}
+          </p>
+        ) : null}
 
         {!waiting && onSubmitSend ? (
           <section className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-3">
-            <h2 className="text-sm font-medium">{he.sendFile}</h2>
+            <h2 className="text-sm font-medium">
+              {formMode === "file_request" ? he.requestFile : he.sendForHandling}
+            </h2>
+            <div className="flex flex-col gap-1 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="form-mode"
+                  checked={formMode === "send"}
+                  onChange={() => {
+                    setFormMode("send");
+                    setFormError(null);
+                  }}
+                />
+                <span>{he.sendForHandling}</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="form-mode"
+                  checked={formMode === "file_request"}
+                  onChange={() => {
+                    setFormMode("file_request");
+                    setFormError(null);
+                  }}
+                />
+                <span>{he.requestFile}</span>
+              </label>
+            </div>
             <label className="flex flex-col gap-1 text-sm">
               <span className="text-zinc-500">{he.recipientLabel}</span>
               <select
@@ -278,24 +398,66 @@ export function WorkspaceReadyScreen({
                 ))}
               </select>
             </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm"
-                onClick={() => {
-                  void onPickFile?.();
-                }}
-              >
-                {he.chooseFile}
-              </button>
-              {pickedFile ? (
-                <span className="text-sm" dir="auto">
-                  {pickedFile.originalFilename}
-                </span>
-              ) : null}
-            </div>
+            {formMode === "send" ? (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 text-sm"
+                    onClick={() => {
+                      void onPickFile?.();
+                    }}
+                  >
+                    {he.chooseFile}
+                  </button>
+                  {pickedFile ? (
+                    <span className="text-sm" dir="auto">
+                      {pickedFile.originalFilename}
+                    </span>
+                  ) : null}
+                </div>
+                <fieldset className="flex flex-col gap-1 text-sm">
+                  <legend className="text-zinc-500">{he.sendFile}</legend>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="requested-action"
+                      checked={requestedAction === "approval"}
+                      onChange={() => {
+                        setRequestedAction("approval");
+                      }}
+                    />
+                    <span>{he.actionForApproval}</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="requested-action"
+                      checked={requestedAction === "review"}
+                      onChange={() => {
+                        setRequestedAction("review");
+                      }}
+                    />
+                    <span>{he.actionForReview}</span>
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="requested-action"
+                      checked={requestedAction === "update"}
+                      onChange={() => {
+                        setRequestedAction("update");
+                      }}
+                    />
+                    <span>{he.actionForUpdate}</span>
+                  </label>
+                </fieldset>
+              </>
+            ) : null}
             <label className="flex flex-col gap-1 text-sm">
-              <span className="text-zinc-500">{he.instructionLabel}</span>
+              <span className="text-zinc-500">
+                {formMode === "file_request" ? he.fileDescriptionLabel : he.instructionLabel}
+              </span>
               <textarea
                 className="min-h-16 rounded-md border border-zinc-300 px-2 py-1.5"
                 maxLength={INSTRUCTION_MAX}
@@ -320,10 +482,20 @@ export function WorkspaceReadyScreen({
               <button
                 type="button"
                 className="rounded-md bg-zinc-900 px-3 py-1.5 text-sm text-white disabled:opacity-60"
-                disabled={sendProgress === "sending"}
+                disabled={
+                  sendProgress === "sending" ||
+                  sendProgress === "uploading" ||
+                  sendProgress === "finalizing"
+                }
                 onClick={onSend}
               >
-                {sendProgress === "sending" ? he.handoffStatus.sending : he.send}
+                {sendProgress === "sending"
+                  ? he.handoffStatus.sending
+                  : sendProgress === "uploading"
+                    ? he.uploadingFile
+                    : sendProgress === "finalizing"
+                      ? he.finishingRequest
+                      : he.send}
               </button>
               <button
                 type="button"
@@ -336,6 +508,23 @@ export function WorkspaceReadyScreen({
           </section>
         ) : waiting ? (
           <p className="text-sm text-zinc-600">{he.waitingForMembers}</p>
+        ) : null}
+
+        {showLoadBanner ? (
+          <div role="alert" className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-3 text-sm">
+            <p>{he.partialRequestsFailed}</p>
+            {onRetryLoad ? (
+              <button
+                type="button"
+                className="self-start rounded-md border border-zinc-300 bg-white px-3 py-1.5"
+                onClick={() => {
+                  void onRetryLoad();
+                }}
+              >
+                {he.tryAgain}
+              </button>
+            ) : null}
+          </div>
         ) : null}
 
         <div role="tablist" className="grid grid-cols-3 gap-1 rounded-lg bg-zinc-200 p-1 text-sm">
@@ -361,8 +550,10 @@ export function WorkspaceReadyScreen({
           {visible.length === 0 ? (
             <p className="text-sm text-zinc-600">{emptyLabel(activeView)}</p>
           ) : (
-            visible.map((handoff) => {
-              const role = handoffRole(handoff, currentMemberId);
+            visible.map((card) => {
+              const handoff = card.source.record;
+              const isLegacy = card.source.kind === "legacy";
+              const role = isLegacy ? handoffRole(handoff, currentMemberId) : null;
               const local = workingLocal(inbox, handoff.id);
               const already = Boolean(local);
               const sender = memberName(members, handoff.senderMemberId);
@@ -371,10 +562,13 @@ export function WorkspaceReadyScreen({
               const differs = local?.contentDiffersFromV1 === true;
               const pendingSync = local?.pendingStatusSync === true;
               const busy = reconciling.has(handoff.id);
-              const returning = handoff.status === "returning" || returningId === handoff.id;
+              const returning =
+                isLegacy && (handoff.status === "returning" || returningId === handoff.id);
               const canReturn =
+                isLegacy &&
                 role === "recipient" &&
                 already &&
+                handoff.status !== null &&
                 canReturnFile({
                   contentDiffersFromV1: differs,
                   cloudStatus: handoff.status,
@@ -382,6 +576,7 @@ export function WorkspaceReadyScreen({
                   reconciling: busy,
                 });
               const showSyncing =
+                isLegacy &&
                 role === "recipient" &&
                 already &&
                 (differs || pendingSync || busy) &&
@@ -390,7 +585,34 @@ export function WorkspaceReadyScreen({
                 handoff.status !== "returned" &&
                 handoff.status !== "return_received" &&
                 handoff.status !== "completed";
-              const history = visibleHistory(handoff);
+              const history = visibleHistory(handoff, {
+                requestedAction: cardRequestedAction(card),
+              });
+              const localWork = localStates[handoff.id] ?? "idle";
+              const v2Source = card.source.kind === "transfer" ? card.source : null;
+              const v2Busy = actionBusyId === handoff.id || localWork === "sending" || localWork === "uploading" || localWork === "finalizing" || localWork === "resuming" || localWork === "aborting";
+              const primary = v2Source && currentMemberId
+                ? recipientPrimaryAction(v2Source, currentMemberId)
+                : null;
+              const senderActs = v2Source && currentMemberId
+                ? senderReturnActions(v2Source, currentMemberId)
+                : { accept: false, revision: false, fileRequestWording: false };
+              const showOpenV2 = Boolean(
+                v2Source &&
+                  currentMemberId &&
+                  onOpenV2 &&
+                  canOpenV2(v2Source, currentMemberId),
+              );
+              const showRemind = Boolean(
+                v2Source && currentMemberId && onRemind && canRemind(v2Source, currentMemberId),
+              );
+              const showCancel = Boolean(
+                v2Source && currentMemberId && onCancelV2 && canCancelV2(v2Source, currentMemberId),
+              );
+              const fileRequestPending = Boolean(
+                v2Source && isFileRequestWithoutVersion(v2Source),
+              );
+              const changed = workingFileChanged(inbox, handoff.id);
               const historyShown = historyOpen === handoff.id;
               const revisionOpen = revisionFor === handoff.id;
               const openVersion = latest ? versionLabel(latest.versionNumber) : local?.version;
@@ -400,7 +622,7 @@ export function WorkspaceReadyScreen({
                   className="flex flex-col gap-2 rounded-lg border border-zinc-200 bg-white p-3 text-sm"
                 >
                   <div dir="auto" className="font-medium">
-                    {handoff.originalFilename}
+                    {card.filename}
                   </div>
                   <div className="text-zinc-600">
                     {`${he.senderLabel}: `}
@@ -408,19 +630,33 @@ export function WorkspaceReadyScreen({
                     {` · ${he.recipientLabel}: `}
                     <span dir="auto">{recipient}</span>
                   </div>
-                  {handoff.instruction ? (
+                  {card.instruction ? (
                     <p dir="auto" className="text-zinc-800">
-                      {handoff.instruction}
+                      {card.instruction}
                     </p>
                   ) : null}
-                  {handoff.dueOn ? (
-                    <div className="text-zinc-600">{`${he.dueOnLabel}: ${formatDueOn(handoff.dueOn)}`}</div>
+                  {card.dueOn ? (
+                    <div className="text-zinc-600">{`${he.dueOnLabel}: ${formatDueOn(card.dueOn)}`}</div>
                   ) : null}
-                  <div>{handoffStatusLabel(handoff.status)}</div>
+                  <div>{card.statusSentence}</div>
+                  {card.actionLabel ? (
+                    <div className="text-zinc-600">{card.actionLabel}</div>
+                  ) : null}
+                  {card.holderDisplayName ? (
+                    <div className="text-zinc-600">
+                      {`${he.currentHolderLabel}: `}
+                      <span dir="auto">{card.holderDisplayName}</span>
+                    </div>
+                  ) : null}
+                  {card.relevantNote ? (
+                    <p dir="auto" className="text-zinc-800">
+                      {card.relevantNote}
+                    </p>
+                  ) : null}
                   <div className="text-zinc-600">
-                    {formatLocalDateTime(new Date(handoff.updatedAt))}
-                    {latest
-                      ? ` · ${he.latestVersionLabel.replace("{version}", String(latest.versionNumber))}`
+                    {formatLocalDateTime(new Date(card.lastActivityAt))}
+                    {card.latestVersionNumber
+                      ? ` · ${he.latestVersionLabel.replace("{version}", String(card.latestVersionNumber))}`
                       : ""}
                   </div>
                   {watchFailed.has(handoff.id) ? (
@@ -428,13 +664,21 @@ export function WorkspaceReadyScreen({
                       {he.watchFailed}
                     </p>
                   ) : null}
+                  {localWork === "sending" ? <div>{he.handoffStatus.sending}</div> : null}
+                  {localWork === "uploading" ? <div>{he.uploadingFile}</div> : null}
+                  {localWork === "finalizing" ? <div>{he.finishingRequest}</div> : null}
+                  {localWork === "resuming" ? <div>{he.resumingUpload}</div> : null}
+                  {localWork === "waiting_reselect" ? <div>{he.waitingForOriginalFile}</div> : null}
+                  {localWork === "file_changed" ? <div>{he.fileChangedDuringUpload}</div> : null}
+                  {localWork === "offline" ? <div>{he.cannotConnectNow}</div> : null}
                   {returning ? (
                     <div>{he.handoffStatus.returning}</div>
                   ) : showSyncing ? (
                     <div>{he.syncingChanges}</div>
                   ) : null}
                   <div className="flex flex-wrap gap-2">
-                    {role === "recipient" &&
+                    {isLegacy &&
+                    role === "recipient" &&
                     handoff.status !== "completed" &&
                     handoff.status !== "return_received" ? (
                       <button
@@ -448,12 +692,13 @@ export function WorkspaceReadyScreen({
                         {already ? he.open : he.downloadAndOpen}
                       </button>
                     ) : null}
-                    {(role === "sender" &&
+                    {isLegacy &&
+                    ((role === "sender" &&
                       (handoff.status === "returned" ||
                         handoff.status === "completed" ||
                         handoff.status === "return_received")) ||
                     (role === "recipient" &&
-                      (handoff.status === "completed" || handoff.status === "return_received")) ? (
+                      (handoff.status === "completed" || handoff.status === "return_received"))) ? (
                       <button
                         type="button"
                         className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
@@ -465,7 +710,7 @@ export function WorkspaceReadyScreen({
                         {already ? he.open : he.downloadAndOpen}
                       </button>
                     ) : null}
-                    {already && onOpenFolder && openVersion ? (
+                    {isLegacy && already && onOpenFolder && openVersion ? (
                       <button
                         type="button"
                         className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
@@ -477,7 +722,7 @@ export function WorkspaceReadyScreen({
                         {he.openFolder}
                       </button>
                     ) : null}
-                    {canReturn && onReturnFile ? (
+                    {isLegacy && canReturn && onReturnFile ? (
                       <button
                         type="button"
                         className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
@@ -489,7 +734,192 @@ export function WorkspaceReadyScreen({
                         {returnFileToLabel(sender)}
                       </button>
                     ) : null}
-                    {role === "sender" && handoff.status === "returned" ? (
+                    {v2Source && showOpenV2 && !fileRequestPending ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy || downloadingId === handoff.id}
+                        onClick={() => {
+                          void onOpenV2?.(handoff);
+                        }}
+                      >
+                        {already ? he.open : senderActs.accept ? he.openLatestVersion : he.downloadAndOpen}
+                      </button>
+                    ) : null}
+                    {primary === "approve" && onApprove ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          if (changed && !window.confirm(he.fileChangedConfirm)) {
+                            return;
+                          }
+                          void onApprove(handoff, resultNoteFor === handoff.id ? resultNote.trim() || null : null);
+                        }}
+                      >
+                        {he.approve}
+                      </button>
+                    ) : null}
+                    {primary === "review" && onFinishReview ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onFinishReview(
+                            handoff,
+                            resultNoteFor === handoff.id ? resultNote.trim() || null : null,
+                          );
+                        }}
+                      >
+                        {he.finishReview}
+                      </button>
+                    ) : null}
+                    {primary === "update" && onReturnUpdate ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          if (!changed) {
+                            setResultNoteFor(handoff.id);
+                            setResultNoteError(null);
+                            return;
+                          }
+                          void onReturnUpdate(
+                            handoff,
+                            resultNoteFor === handoff.id ? resultNote.trim() || null : null,
+                          );
+                        }}
+                      >
+                        {he.returnUpdate}
+                      </button>
+                    ) : null}
+                    {(primary === "approve" || primary === "review" || primary === "update") && onReject ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          setResultNoteFor(handoff.id);
+                          setResultNote("");
+                          setResultNoteError(null);
+                        }}
+                      >
+                        {he.reject}
+                      </button>
+                    ) : null}
+                    {primary === "attach" && onAttachFileRequest ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onAttachFileRequest(handoff);
+                        }}
+                      >
+                        {he.attachAndSend}
+                      </button>
+                    ) : null}
+                    {primary === "attach" && onCannotProvide ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          setResultNoteFor(handoff.id);
+                          setResultNote("");
+                          setResultNoteError(null);
+                        }}
+                      >
+                        {he.cannotProvide}
+                      </button>
+                    ) : null}
+                    {senderActs.accept && onAcceptV2 ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onAcceptV2(handoff);
+                        }}
+                      >
+                        {he.acceptAndClose}
+                      </button>
+                    ) : null}
+                    {senderActs.revision ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          setRevisionFor(handoff.id);
+                          setRevisionNote("");
+                          setRevisionError(null);
+                        }}
+                      >
+                        {senderActs.fileRequestWording ? he.requestOtherFile : he.requestRevision}
+                      </button>
+                    ) : null}
+                    {showRemind ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onRemind?.(handoff);
+                        }}
+                      >
+                        {he.sendReminder}
+                      </button>
+                    ) : null}
+                    {showCancel ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5 disabled:opacity-60"
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onCancelV2?.(handoff);
+                        }}
+                      >
+                        {he.cancelRequest}
+                      </button>
+                    ) : null}
+                    {localWork === "retry" || localWork === "offline" ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5"
+                        onClick={() => {
+                          void onRetryLocal?.(handoff.id);
+                        }}
+                      >
+                        {he.tryAgain}
+                      </button>
+                    ) : null}
+                    {localWork === "waiting_reselect" ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5"
+                        onClick={() => {
+                          void onRestoreSnapshot?.(handoff.id);
+                        }}
+                      >
+                        {he.chooseFile}
+                      </button>
+                    ) : null}
+                    {localWork !== "idle" && onAbortLocal ? (
+                      <button
+                        type="button"
+                        className="rounded-md border border-zinc-300 bg-white px-3 py-1.5"
+                        onClick={() => {
+                          void onAbortLocal(handoff.id);
+                        }}
+                      >
+                        {he.abortAttempt}
+                      </button>
+                    ) : null}
+                    {isLegacy && role === "sender" && handoff.status === "returned" ? (
                       <>
                         <button
                           type="button"
@@ -516,6 +946,61 @@ export function WorkspaceReadyScreen({
                       </>
                     ) : null}
                   </div>
+                  {resultNoteFor === handoff.id ? (
+                    <div className="flex flex-col gap-2">
+                      <label className="flex flex-col gap-1">
+                        <span className="text-zinc-500">
+                          {primary === "update" ? he.replyLabel : primary === "attach" ? he.rejectReasonLabel : he.optionalNoteLabel}
+                        </span>
+                        <textarea
+                          className="min-h-16 rounded-md border border-zinc-300 px-2 py-1.5"
+                          maxLength={REVISION_NOTE_MAX}
+                          value={resultNote}
+                          onChange={(event) => {
+                            setResultNote(event.target.value);
+                          }}
+                        />
+                      </label>
+                      {resultNoteError ? (
+                        <p role="alert" className="text-red-700">
+                          {resultNoteError}
+                        </p>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="self-start rounded-md bg-zinc-900 px-3 py-1.5 text-white"
+                        onClick={() => {
+                          const trimmed = resultNote.trim();
+                          const needsNote =
+                            primary === "attach" ||
+                            primary === "approve" ||
+                            primary === "review" ||
+                            (primary === "update" && !changed);
+                          if (needsNote && !trimmed) {
+                            setResultNoteError(
+                              primary === "update" ? he.replyRequired : he.resultNoteRequired,
+                            );
+                            return;
+                          }
+                          if (trimmed.length > REVISION_NOTE_MAX) {
+                            setResultNoteError(he.revisionNoteTooLong);
+                            return;
+                          }
+                          setResultNoteError(null);
+                          if (primary === "attach") {
+                            void onCannotProvide?.(handoff, trimmed);
+                          } else if (primary === "update") {
+                            void onReturnUpdate?.(handoff, trimmed);
+                          } else {
+                            void onReject?.(handoff, trimmed);
+                          }
+                          setResultNoteFor(null);
+                        }}
+                      >
+                        {primary === "attach" ? he.cannotProvide : primary === "update" ? he.returnUpdate : he.reject}
+                      </button>
+                    </div>
+                  ) : null}
                   {revisionOpen ? (
                     <div className="flex flex-col gap-2">
                       <label className="flex flex-col gap-1">
@@ -548,7 +1033,11 @@ export function WorkspaceReadyScreen({
                             return;
                           }
                           setRevisionError(null);
-                          void onRequestRevision?.(handoff, revisionNote.trim());
+                          if (v2Source) {
+                            void onRevisionV2?.(handoff, revisionNote.trim());
+                          } else {
+                            void onRequestRevision?.(handoff, revisionNote.trim());
+                          }
                           setRevisionFor(null);
                         }}
                       >

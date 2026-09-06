@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { he, returnFileToLabel } from "../../copy/he";
 import type { HandoffRecord } from "../handoff/types";
+import { MEMBER, v2OpenMissingPointer, v2RootActive } from "../handoff/view.fixtures";
 import { WorkspaceReadyScreen } from "./WorkspaceReadyScreen";
 
 const workspace = {
@@ -184,6 +185,35 @@ describe("WorkspaceReadyScreen", () => {
     expect(screen.queryByText("נכשל.docx")).not.toBeInTheDocument();
   });
 
+  it("offers send-for-handling and file-request modes", () => {
+    const onSubmitFileRequest = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={members}
+        onSubmitSend={() => undefined}
+        onSubmitFileRequest={onSubmitFileRequest}
+        onPickFile={() => undefined}
+      />,
+    );
+    expect(screen.getAllByText(he.sendForHandling).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText(he.requestFile));
+    expect(screen.queryByRole("button", { name: he.chooseFile })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(he.fileDescriptionLabel), {
+      target: { value: "נא לצרף את הדוח החתום" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    expect(onSubmitFileRequest).toHaveBeenCalledWith({
+      recipientMemberId: "member-2",
+      instruction: "נא לצרף את הדוח החתום",
+      dueOn: null,
+    });
+    expect(document.body.textContent).not.toMatch(/create_file_request|handoff_id|storage_path/);
+  });
+
   it("does not send without a file, recipient, or instruction", () => {
     const onSubmitSend = vi.fn();
     render(
@@ -278,6 +308,24 @@ describe("WorkspaceReadyScreen", () => {
     expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
     expect(screen.getByText(he.handoffStatus.modified)).toBeInTheDocument();
+
+    rerender(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דנה"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[{ ...incoming, status: "modified" }]}
+        inbox={[{ ...inbox[0]!, pendingStatusSync: false }]}
+        reconcilingIds={["handoff-1"]}
+        members={members}
+        onReturnFile={() => undefined}
+        onDownloadAndOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
+    expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
   });
 
   it("renders Hebrew history with versions and notes", () => {
@@ -334,5 +382,96 @@ describe("WorkspaceReadyScreen", () => {
     expect(screen.getByText("חסר החתימה")).toBeInTheDocument();
     expect(screen.getByText(he.historyCompleted)).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/finalized|revision_requested|completed/);
+  });
+
+  it("shows a v2 card in the Hebrew sections with recipient actions", () => {
+    const { record, transfers } = v2RootActive();
+    const v2Members = [
+      ...members,
+      { ...members[0]!, id: MEMBER.creator, displayName: "מאור" },
+      { ...members[1]!, id: MEMBER.recipient, displayName: "דני" },
+    ];
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        handoffs={[record]}
+        transfers={transfers}
+        members={v2Members}
+        onDownloadAndOpen={() => undefined}
+        onOpenV2={() => undefined}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+        onReturnFile={() => undefined}
+        onCompleteHandoff={() => undefined}
+        onRequestRevision={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByText("v2-active.docx")).toBeInTheDocument();
+    expect(screen.getByText(he.actionApproval)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.approveAndComplete })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(
+      /mine|watching|flow_version|active_transfer|preparing|hop-active|handoff_view_inconsistent/,
+    );
+  });
+
+  it("keeps a load banner out of the section counts", () => {
+    const good = v2RootActive();
+    const bad = v2OpenMissingPointer();
+    const onRetryLoad = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        handoffs={[good.record, bad.record]}
+        transfers={[...good.transfers, ...bad.transfers]}
+        members={[
+          ...members,
+          { ...members[0]!, id: MEMBER.creator, displayName: "מאור" },
+          { ...members[1]!, id: MEMBER.recipient, displayName: "דני" },
+        ]}
+        onRetryLoad={onRetryLoad}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: `${he.waitingForOthers} 0` })).toBeInTheDocument();
+    expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
+    expect(screen.queryByText("v2-missing.docx")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.tryAgain }));
+    expect(onRetryLoad).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain("handoff_view_inconsistent");
+  });
+
+  it("keeps v1 cards when v2 data failed to load", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[handoff({ status: "sent" })]}
+        transfers={[]}
+        v2LoadFailed
+        members={members}
+        onDownloadAndOpen={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("דוח.docx")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
   });
 });

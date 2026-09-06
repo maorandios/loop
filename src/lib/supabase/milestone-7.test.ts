@@ -194,7 +194,7 @@ describe("reconciliation worker", () => {
 });
 
 describe("return button gating", () => {
-  it("enables return only when local, cloud, and sync are stable", () => {
+  it("enables return when the cloud is already modified and local sync is not pending", () => {
     expect(
       canReturnFile({
         contentDiffersFromV1: true,
@@ -226,7 +226,7 @@ describe("return button gating", () => {
         pendingStatusSync: false,
         reconciling: true,
       }),
-    ).toBe(false);
+    ).toBe(true);
   });
 });
 
@@ -235,6 +235,7 @@ describe("Milestone 7 client and native source", () => {
     const app = read("src/App.tsx");
     const watch = read("src-tauri/src/watch.rs").split("#[cfg(test)]")[0] ?? "";
     const transfer = read("src-tauri/src/transfer.rs").split("#[cfg(test)]")[0] ?? "";
+    const tus = read("src-tauri/src/tus.rs").split("#[cfg(test)]")[0] ?? "";
     expect(app).toContain("prepare_return_snapshot");
     expect(app).toContain("returnSnapshotId");
     expect(app).toContain("tus_upload_v2");
@@ -243,7 +244,7 @@ describe("Milestone 7 client and native source", () => {
     expect(app).not.toContain("access_token");
     expect(watch).toContain("pub async fn tus_upload_v2");
     expect(transfer).toContain("async fn tus_upload_v1");
-    expect(transfer).toContain("Bearer {access_token}");
+    expect(tus).toContain("Bearer {access_token}");
     expect(he.watchFailed).toBe("לא ניתן לעקוב אחר שינויים בקובץ הזה");
     expect(he.fileChangedDuringReturn).toBe("הקובץ השתנה בזמן ההחזרה. נסה שוב.");
     expect(returnFileToLabel("מאור")).toBe("החזר למאור");

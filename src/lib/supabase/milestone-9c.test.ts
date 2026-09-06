@@ -16,7 +16,8 @@ describe("Milestone 9C workflow UI and autostart", () => {
     const cargo = read("src-tauri/Cargo.toml");
     const conf = read("src-tauri/tauri.conf.json");
     const capabilities = read("src-tauri/capabilities/default.json");
-    expect(app).toContain("createHandoffWithContext");
+    expect(read("src/features/handoff/service.ts")).toContain("createHandoffWithContext");
+    expect(app).toContain("tus_upload_v2");
     expect(app).not.toContain("createHandoff(");
     expect(app).not.toContain("markReturnReceived");
     expect(app).not.toMatch(/awaiting[_]?review/i);

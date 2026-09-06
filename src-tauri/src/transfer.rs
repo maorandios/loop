@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,9 +15,17 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use uuid::Uuid;
 
 use crate::copy::HE;
-use crate::inbox::{self, InboxLocalEntry, InboxRole};
-use crate::paths::{inbox_version_dir, parse_version_segment, version_folder_name};
-use crate::state::AppState;
+use crate::inbox::{self, apply_hash_result, InboxLocalEntry, InboxRole};
+use crate::paths::{inbox_version_dir, parse_version_segment, tmp_dir, version_folder_name};
+use crate::resume::{
+    self, ack_aborted, ack_finalized, assert_reservation_fresh, delete_resume_and_snapshot,
+    load_resume, mark_storage_removed, mark_tus_terminated, mark_upload_completed_cleanup,
+    resume_blocks_upload, save_resume, snapshot_is_valid, source_matches_snapshot, try_lock_resume,
+    update_expiry, ResumeKind, ResumeStage, ResumeSummary, FILE_CHANGED_DURING_UPLOAD,
+    POST_RESPONSE_UNKNOWN, RESUME_FILE_MISMATCH, RESUME_SNAPSHOT_REQUIRED, SNAPSHOT_REQUIRED,
+};
+use crate::state::{AppState, ResultSnapshot};
+use crate::tus::{self, DeleteConflictDecision, TusDeleteResult, TusHeadResult, TusPostResult};
 
 pub const TUS_CHUNK_SIZE: usize = 6 * 1024 * 1024;
 pub const MAX_FILE_SIZE: u64 = 52_428_800;
@@ -31,6 +39,7 @@ const HASH_MISMATCH: &str = "hash_mismatch";
 const SELECTION_UNKNOWN: &str = "selection_unknown";
 const INVALID_STORAGE_PATH: &str = "invalid_storage_path";
 const INVALID_DOWNLOAD_URL: &str = "invalid_download_url";
+const SNAPSHOT_UNKNOWN: &str = "snapshot_unknown";
 
 pub fn project_ref() -> &'static str {
     include_str!(concat!(env!("OUT_DIR"), "/filerelay_project_ref.txt")).trim()
@@ -43,6 +52,35 @@ pub struct PickedFile {
     pub original_filename: String,
     pub size: u64,
     pub blake3: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedResultSnapshot {
+    pub snapshot_id: Uuid,
+    pub file_name: String,
+    pub file_size: u64,
+    pub blake3: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResumeUploadResult {
+    pub kind: ResumeKind,
+    pub stage: ResumeStage,
+    pub handoff_id: Uuid,
+    pub transfer_id: Uuid,
+    pub object_id: Uuid,
+    pub version_number: u16,
+    pub file_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blake3: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalize_client_request_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finalize_intent: Option<resume::FinalizeIntentPayload>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -356,7 +394,7 @@ fn http_client(fail: &'static str) -> Result<reqwest::Client, String> {
         .map_err(|_| fail.to_string())
 }
 
-fn tus_metadata_pairs(storage_path: &str) -> [(&'static str, &str); 4] {
+pub(crate) fn tus_metadata_pairs(storage_path: &str) -> [(&'static str, &str); 4] {
     [
         ("bucketName", "filerelay"),
         ("objectName", storage_path),
@@ -365,7 +403,7 @@ fn tus_metadata_pairs(storage_path: &str) -> [(&'static str, &str); 4] {
     ]
 }
 
-fn tus_metadata(storage_path: &str) -> String {
+pub(crate) fn tus_metadata(storage_path: &str) -> String {
     tus_metadata_pairs(storage_path)
         .iter()
         .map(|(key, value)| format!("{key} {}", B64.encode(value.as_bytes())))
@@ -373,7 +411,7 @@ fn tus_metadata(storage_path: &str) -> String {
         .join(",")
 }
 
-fn tus_metadata_key_names(storage_path: &str) -> Vec<&'static str> {
+pub(crate) fn tus_metadata_key_names(storage_path: &str) -> Vec<&'static str> {
     tus_metadata_pairs(storage_path)
         .iter()
         .map(|(key, _)| *key)
@@ -516,6 +554,7 @@ pub fn format_tus_post_failure_log(
     )
 }
 
+#[allow(dead_code)]
 fn log_tus_post_failure(
     status: u16,
     body: &str,
@@ -558,93 +597,7 @@ pub(crate) async fn upload_resumable(
     storage_path: &str,
     expected_size: u64,
 ) -> Result<(), String> {
-    let client = http_client(SEND_FAILED)?;
-    let endpoint = tus_endpoint(project_ref());
-    let post_header_names = [
-        "Tus-Resumable",
-        "Upload-Length",
-        "Upload-Metadata",
-        "Authorization",
-        "x-upsert",
-    ];
-    let metadata_keys = tus_metadata_key_names(storage_path);
-    let create = client
-        .post(&endpoint)
-        .header("Tus-Resumable", "1.0.0")
-        .header("Upload-Length", expected_size.to_string())
-        .header("Upload-Metadata", tus_metadata(storage_path))
-        .header("Authorization", format!("Bearer {access_token}"))
-        .header("x-upsert", "false")
-        .send()
-        .await
-        .map_err(|_| SEND_FAILED.to_string())?;
-    if !create.status().is_success() && create.status().as_u16() != 201 {
-        let status = create.status().as_u16();
-        let body = create.text().await.unwrap_or_default();
-        log_tus_post_failure(
-            status,
-            &body,
-            &endpoint,
-            expected_size,
-            &post_header_names,
-            &metadata_keys,
-            storage_path,
-        );
-        return Err(SEND_FAILED.to_string());
-    }
-    let location = create
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| SEND_FAILED.to_string())?
-        .to_string();
-    drop(create);
-    let patch_url = reqwest::Url::parse(&endpoint)
-        .map_err(|_| SEND_FAILED.to_string())?
-        .join(&location)
-        .map_err(|_| SEND_FAILED.to_string())?;
-    if !is_allowed_redirect_url(&patch_url, project_ref()) {
-        return Err(SEND_FAILED.to_string());
-    }
-
-    let mut file = tokio::fs::File::open(path)
-        .await
-        .map_err(|_| SEND_FAILED.to_string())?;
-    let mut offset: u64 = 0;
-    let mut buf = vec![0u8; TUS_CHUNK_SIZE];
-    while offset < expected_size {
-        let remaining = (expected_size - offset) as usize;
-        let want = remaining.min(TUS_CHUNK_SIZE);
-        let mut filled = 0;
-        while filled < want {
-            let n = file
-                .read(&mut buf[filled..want])
-                .await
-                .map_err(|_| SEND_FAILED.to_string())?;
-            if n == 0 {
-                return Err(SEND_FAILED.to_string());
-            }
-            filled += n;
-        }
-        let response = client
-            .patch(patch_url.clone())
-            .header("Tus-Resumable", "1.0.0")
-            .header("Upload-Offset", offset.to_string())
-            .header(
-                reqwest::header::CONTENT_TYPE,
-                "application/offset+octet-stream",
-            )
-            .header("Authorization", format!("Bearer {access_token}"))
-            .body(buf[..filled].to_vec())
-            .send()
-            .await
-            .map_err(|_| SEND_FAILED.to_string())?;
-        if !response.status().is_success() && response.status().as_u16() != 204 {
-            return Err(SEND_FAILED.to_string());
-        }
-        offset += filled as u64;
-    }
-    Ok(())
+    crate::tus::upload_ephemeral(path, access_token, storage_path, expected_size).await
 }
 
 #[cfg(windows)]
@@ -701,7 +654,58 @@ fn rename_no_clobber(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 fn final_inbox_path(root: &Path, handoff_id: Uuid, filename: &str, version: &str) -> Result<PathBuf, String> {
-    Ok(inbox_version_dir(root, &handoff_id.to_string(), version)?.join(filename))
+    if filename.contains(['/', '\\']) || filename.contains("..") {
+        return Err(DOWNLOAD_FAILED.to_string());
+    }
+    let dir = inbox_version_dir(root, &handoff_id.to_string(), version)?;
+    let dest = dir.join(filename);
+    if dest.parent() != Some(dir.as_path()) {
+        return Err(DOWNLOAD_FAILED.to_string());
+    }
+    Ok(dest)
+}
+
+pub(crate) fn copy_hashed(src: &Path, dest: &Path) -> Result<(u64, String), String> {
+    let mut input = File::open(src).map_err(|err| {
+        if is_file_busy(&err) {
+            FILE_BUSY.to_string()
+        } else {
+            SEND_FAILED.to_string()
+        }
+    })?;
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|_| SEND_FAILED.to_string())?;
+    }
+    let mut output = File::create(dest).map_err(|_| SEND_FAILED.to_string())?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 65_536];
+    let mut size = 0u64;
+    loop {
+        let n = input.read(&mut buf).map_err(|err| {
+            if is_file_busy(&err) {
+                FILE_BUSY.to_string()
+            } else {
+                SEND_FAILED.to_string()
+            }
+        })?;
+        if n == 0 {
+            break;
+        }
+        size += n as u64;
+        if size > MAX_FILE_SIZE {
+            return Err(FILE_TOO_LARGE.to_string());
+        }
+        hasher.update(&buf[..n]);
+        output
+            .write_all(&buf[..n])
+            .map_err(|_| SEND_FAILED.to_string())?;
+    }
+    output.flush().map_err(|_| SEND_FAILED.to_string())?;
+    output.sync_all().map_err(|_| SEND_FAILED.to_string())?;
+    if size == 0 {
+        return Err(SEND_FAILED.to_string());
+    }
+    Ok((size, hasher.finalize().to_hex().to_string()))
 }
 
 async fn file_matches(path: &Path, expected_size: u64, expected_blake3: &str) -> bool {
@@ -867,6 +871,796 @@ pub async fn tus_upload_v1(
         .expect("selection lock")
         .remove(&selection_id);
     result
+}
+
+fn result_snapshot_disk_path(root: &Path, handoff_id: Uuid, snapshot_id: Uuid) -> PathBuf {
+    tmp_dir(root).join(format!("result-{handoff_id}-{snapshot_id}.part"))
+}
+
+fn take_selection_path(state: &AppState, selection_id: Uuid) -> Result<PathBuf, String> {
+    state
+        .selections
+        .lock()
+        .expect("selection lock")
+        .remove(&selection_id)
+        .ok_or_else(|| SELECTION_UNKNOWN.to_string())
+}
+
+fn snapshot_file_name(path: &Path) -> Result<String, String> {
+    let original = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    sanitize_filename(original)
+}
+
+fn store_result_snapshot(
+    state: &AppState,
+    selection_id: Uuid,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+) -> Result<PreparedResultSnapshot, String> {
+    let source = take_selection_path(state, selection_id)?;
+    let file_name = snapshot_file_name(&source)?;
+    let snapshot_id = Uuid::new_v4();
+    let dest = result_snapshot_disk_path(&state.data_root, handoff_id, snapshot_id);
+    let copied = match copy_hashed(&source, &dest) {
+        Ok(copied) => copied,
+        Err(err) => {
+            let _ = fs::remove_file(&dest);
+            return Err(err);
+        }
+    };
+    state.result_snapshots.lock().expect("result snapshot lock").insert(
+        snapshot_id,
+        ResultSnapshot {
+            path: dest,
+            handoff_id,
+            transfer_id,
+            file_name: file_name.clone(),
+            size: copied.0,
+            blake3: copied.1.clone(),
+            source_path: source,
+        },
+    );
+    Ok(PreparedResultSnapshot {
+        snapshot_id,
+        file_name,
+        file_size: copied.0,
+        blake3: copied.1,
+    })
+}
+
+fn assert_snapshot_binding(
+    snapshot: &ResultSnapshot,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+) -> Result<(), String> {
+    if snapshot.handoff_id != handoff_id || snapshot.transfer_id != transfer_id {
+        return Err(SNAPSHOT_UNKNOWN.to_string());
+    }
+    Ok(())
+}
+
+fn get_result_snapshot(state: &AppState, snapshot_id: Uuid) -> Result<ResultSnapshot, String> {
+    state
+        .result_snapshots
+        .lock()
+        .expect("result snapshot lock")
+        .get(&snapshot_id)
+        .cloned()
+        .ok_or_else(|| SNAPSHOT_UNKNOWN.to_string())
+}
+
+fn remove_result_snapshot(state: &AppState, snapshot_id: Uuid) {
+    if let Some(snapshot) = state
+        .result_snapshots
+        .lock()
+        .expect("result snapshot lock")
+        .remove(&snapshot_id)
+    {
+        let _ = fs::remove_file(&snapshot.path);
+    }
+}
+
+async fn run_persistent_upload(
+    root: &Path,
+    mut record: resume::ResumeRecord,
+    access_token: &str,
+) -> Result<(), String> {
+    if record.stage == ResumeStage::UploadedWaitingFinalize {
+        return Ok(());
+    }
+    if resume_blocks_upload(record.stage) {
+        return Err(SEND_FAILED.to_string());
+    }
+    if !snapshot_is_valid(&record) {
+        return Err(SNAPSHOT_REQUIRED.to_string());
+    }
+    let snapshot_path = PathBuf::from(
+        record
+            .snapshot_path
+            .as_ref()
+            .ok_or_else(|| SNAPSHOT_REQUIRED.to_string())?,
+    );
+
+    if record.tus_location.is_some()
+        && matches!(
+            record.stage,
+            ResumeStage::TusCreated | ResumeStage::Uploading
+        )
+    {
+        assert_reservation_fresh(&record)?;
+        match tus::tus_head(access_token, record.tus_location.as_deref().unwrap()).await {
+            TusHeadResult::Offset { offset, .. } => {
+                record.last_offset = offset;
+                record.stage = ResumeStage::Uploading;
+                record.updated_at = resume::now_unix();
+                save_resume(root, &record)?;
+            }
+            TusHeadResult::Gone => {
+                record.tus_location = None;
+                record.last_offset = 0;
+                record.stage = ResumeStage::SnapshotReady;
+                record.updated_at = resume::now_unix();
+                save_resume(root, &record)?;
+            }
+            TusHeadResult::Transient => return Err(SEND_FAILED.to_string()),
+            TusHeadResult::Failed => return Err(SEND_FAILED.to_string()),
+        }
+    }
+
+    if record.tus_location.is_none() {
+        assert_reservation_fresh(&record)?;
+        match tus::tus_post(access_token, &record.storage_path, record.expected_size).await {
+            TusPostResult::Created(location) => {
+                record.tus_location = Some(location);
+                record.last_offset = 0;
+                record.stage = ResumeStage::TusCreated;
+                record.updated_at = resume::now_unix();
+                save_resume(root, &record)?;
+            }
+            TusPostResult::Unknown => {
+                record.stage = ResumeStage::PostResponseUnknown;
+                record.tus_location = None;
+                record.updated_at = resume::now_unix();
+                save_resume(root, &record)?;
+                return Err(POST_RESPONSE_UNKNOWN.to_string());
+            }
+            TusPostResult::Failed => return Err(SEND_FAILED.to_string()),
+        }
+    }
+
+    if record.stage == ResumeStage::PostResponseUnknown {
+        assert_reservation_fresh(&record)?;
+        match tus::tus_post(access_token, &record.storage_path, record.expected_size).await {
+            TusPostResult::Created(location) => {
+                record.tus_location = Some(location);
+                record.last_offset = 0;
+                record.stage = ResumeStage::TusCreated;
+                record.updated_at = resume::now_unix();
+                save_resume(root, &record)?;
+            }
+            TusPostResult::Unknown => {
+                save_resume(root, &record)?;
+                return Err(POST_RESPONSE_UNKNOWN.to_string());
+            }
+            TusPostResult::Failed => return Err(SEND_FAILED.to_string()),
+        }
+    }
+
+    let location = record
+        .tus_location
+        .clone()
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    assert_reservation_fresh(&record)?;
+    record.stage = ResumeStage::Uploading;
+    record.updated_at = resume::now_unix();
+    save_resume(root, &record)?;
+    let offset = tus::tus_patch_file(
+        &snapshot_path,
+        access_token,
+        &location,
+        record.last_offset,
+        record.expected_size,
+    )
+    .await?;
+    record.last_offset = offset;
+    record.updated_at = resume::now_unix();
+    save_resume(root, &record)?;
+
+    if !source_matches_snapshot(&record)? {
+        return Err(FILE_CHANGED_DURING_UPLOAD.to_string());
+    }
+
+    record.stage = ResumeStage::UploadedWaitingFinalize;
+    record.updated_at = resume::now_unix();
+    save_resume(root, &record)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn prepare_result_snapshot_from_selection(
+    state: State<AppState>,
+    selection_id: Uuid,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+) -> Result<PreparedResultSnapshot, String> {
+    store_result_snapshot(&state, selection_id, handoff_id, transfer_id)
+}
+
+const WORKING_FILE_BACKOFF_MS: [u64; 5] = [250, 500, 1_000, 2_000, 4_000];
+
+fn hash_working_file(path: &Path, pending_recheck: bool) -> Result<(u64, String), String> {
+    let mut last_busy = false;
+    for (index, wait_ms) in std::iter::once(0u64)
+        .chain(WORKING_FILE_BACKOFF_MS.into_iter())
+        .enumerate()
+    {
+        if wait_ms > 0 {
+            std::thread::sleep(Duration::from_millis(wait_ms));
+        }
+        match hash_path(path) {
+            Ok(hashed) => return Ok(hashed),
+            Err(err) if err == FILE_BUSY => {
+                last_busy = true;
+                if index == WORKING_FILE_BACKOFF_MS.len() {
+                    break;
+                }
+            }
+            Err(err) => {
+                if pending_recheck {
+                    return Err(FILE_BUSY.to_string());
+                }
+                return Err(err);
+            }
+        }
+    }
+    if last_busy || pending_recheck {
+        return Err(FILE_BUSY.to_string());
+    }
+    Err(SEND_FAILED.to_string())
+}
+
+fn store_result_snapshot_from_working_file(
+    state: &AppState,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+) -> Result<PreparedResultSnapshot, String> {
+    let inbox = inbox::load_inbox(&state.data_root)?;
+    let record = inbox
+        .working_record(&handoff_id.to_string())
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    let version = inbox
+        .working_version(&handoff_id.to_string())
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    let version_label = version_folder_name(version)?;
+    let version_dir = inbox_version_dir(&state.data_root, &handoff_id.to_string(), &version_label)?;
+    let source = final_inbox_path(
+        &state.data_root,
+        handoff_id,
+        &record.filename,
+        &version_label,
+    )?;
+    if !source.starts_with(&version_dir) {
+        return Err(SEND_FAILED.to_string());
+    }
+    let pending_recheck = record.pending_recheck;
+    let before = hash_working_file(&source, pending_recheck)?;
+    if before.0 > MAX_FILE_SIZE {
+        return Err(FILE_TOO_LARGE.to_string());
+    }
+    let mut inbox = inbox::load_inbox(&state.data_root)?;
+    if let Some(working) = inbox.working_record_mut(&handoff_id.to_string()) {
+        apply_hash_result(
+            working,
+            working.generation.saturating_add(1),
+            &before.1,
+            false,
+        );
+        inbox::save_inbox(&state.data_root, &inbox)?;
+    }
+    let snapshot_id = Uuid::new_v4();
+    let dest = result_snapshot_disk_path(&state.data_root, handoff_id, snapshot_id);
+    let copied = match copy_hashed(&source, &dest) {
+        Ok(copied) => copied,
+        Err(err) => {
+            let _ = fs::remove_file(&dest);
+            return Err(err);
+        }
+    };
+    let after = match hash_path(&source) {
+        Ok(after) => after,
+        Err(err) => {
+            let _ = fs::remove_file(&dest);
+            return Err(if err == FILE_BUSY {
+                FILE_BUSY.to_string()
+            } else {
+                err
+            });
+        }
+    };
+    if before != copied || copied != after {
+        let _ = fs::remove_file(&dest);
+        return Err(FILE_CHANGED_DURING_UPLOAD.to_string());
+    }
+    state.result_snapshots.lock().expect("result snapshot lock").insert(
+        snapshot_id,
+        ResultSnapshot {
+            path: dest,
+            handoff_id,
+            transfer_id,
+            file_name: record.filename.clone(),
+            size: copied.0,
+            blake3: copied.1.clone(),
+            source_path: source,
+        },
+    );
+    Ok(PreparedResultSnapshot {
+        snapshot_id,
+        file_name: record.filename.clone(),
+        file_size: copied.0,
+        blake3: copied.1,
+    })
+}
+
+#[tauri::command]
+pub async fn prepare_result_snapshot_from_working_file(
+    state: State<'_, AppState>,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+) -> Result<PreparedResultSnapshot, String> {
+    if state
+        .watches
+        .lock()
+        .expect("watch lock")
+        .contains_key(&handoff_id)
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    store_result_snapshot_from_working_file(&state, handoff_id, transfer_id)
+}
+
+#[tauri::command]
+pub async fn tus_upload_initial_v2(
+    state: State<'_, AppState>,
+    selection_id: Uuid,
+    access_token: String,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+    object_id: Uuid,
+    storage_path: String,
+    pending_upload_expires_at: String,
+    reservation_client_request_id: Uuid,
+    finalize_client_request_id: Uuid,
+    abort_client_request_id: Uuid,
+) -> Result<(), String> {
+    let parsed = validate_storage_path_ids(&storage_path, handoff_id, object_id)?;
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, parsed.version, object_id),
+    )?;
+    if let Some(existing) = load_resume(&state.data_root, handoff_id, parsed.version, object_id)? {
+        return run_persistent_upload(&state.data_root, existing, &access_token).await;
+    }
+    let prepared = store_result_snapshot(&state, selection_id, handoff_id, transfer_id)?;
+    let snapshot = get_result_snapshot(&state, prepared.snapshot_id)?;
+    let record = resume::new_record(
+        ResumeKind::Initial,
+        handoff_id,
+        transfer_id,
+        object_id,
+        parsed.version,
+        storage_path,
+        snapshot.file_name.clone(),
+        snapshot.size,
+        snapshot.blake3.clone(),
+        pending_upload_expires_at,
+        reservation_client_request_id,
+        finalize_client_request_id,
+        abort_client_request_id,
+        prepared.snapshot_id,
+        snapshot.path.clone(),
+        Some(snapshot.source_path.clone()),
+    )?;
+    save_resume(&state.data_root, &record)?;
+    run_persistent_upload(&state.data_root, record, &access_token).await
+}
+
+#[tauri::command]
+pub async fn tus_upload_result(
+    state: State<'_, AppState>,
+    snapshot_id: Uuid,
+    access_token: String,
+    handoff_id: Uuid,
+    transfer_id: Uuid,
+    object_id: Uuid,
+    storage_path: String,
+    version_number: u16,
+    pending_upload_expires_at: String,
+    reservation_client_request_id: Uuid,
+    finalize_client_request_id: Uuid,
+    abort_client_request_id: Uuid,
+    finalize_intent: resume::FinalizeIntent,
+) -> Result<(), String> {
+    let parsed =
+        validate_storage_path_ids_version(&storage_path, handoff_id, object_id, version_number)?;
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let incoming = finalize_intent.normalized();
+    if incoming.result_action.is_empty() {
+        return Err(SEND_FAILED.to_string());
+    }
+    if let Some(existing) = load_resume(&state.data_root, handoff_id, version_number, object_id)? {
+        resume::assert_finalize_intent_unchanged(&existing, &incoming)?;
+        return run_persistent_upload(&state.data_root, existing, &access_token).await;
+    }
+    let snapshot = get_result_snapshot(&state, snapshot_id)?;
+    assert_snapshot_binding(&snapshot, handoff_id, transfer_id)?;
+    let mut record = resume::new_record(
+        ResumeKind::Result,
+        handoff_id,
+        transfer_id,
+        object_id,
+        parsed.version,
+        storage_path,
+        snapshot.file_name.clone(),
+        snapshot.size,
+        snapshot.blake3.clone(),
+        pending_upload_expires_at,
+        reservation_client_request_id,
+        finalize_client_request_id,
+        abort_client_request_id,
+        snapshot_id,
+        snapshot.path.clone(),
+        Some(snapshot.source_path.clone()),
+    )?;
+    record.finalize_intent = Some(incoming);
+    save_resume(&state.data_root, &record)?;
+    run_persistent_upload(&state.data_root, record, &access_token).await
+}
+
+async fn terminate_tus_location_unlocked(
+    root: &Path,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    access_token: &str,
+) -> Result<(), String> {
+    let Some(record) = load_resume(root, handoff_id, version_number, object_id)? else {
+        return Ok(());
+    };
+    let Some(location) = record.tus_location.clone() else {
+        return Ok(());
+    };
+    match tus::tus_delete(access_token, &location).await {
+        TusDeleteResult::Terminated | TusDeleteResult::Conflict => Ok(()),
+        TusDeleteResult::Transient | TusDeleteResult::Failed => Err(SEND_FAILED.to_string()),
+    }
+}
+
+async fn lock_resume_for_abort(
+    inflight: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<resume::ResumeKey>>>,
+    key: resume::ResumeKey,
+) -> Result<resume::ResumeGuard, String> {
+    if let Ok(guard) = try_lock_resume(inflight.clone(), key) {
+        return Ok(guard);
+    }
+    for _ in 0..80 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Ok(guard) = try_lock_resume(inflight.clone(), key) {
+            return Ok(guard);
+        }
+    }
+    Err(resume::RESUME_BUSY.to_string())
+}
+
+#[tauri::command]
+pub async fn tus_abort_resume(
+    state: State<'_, AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    access_token: String,
+) -> Result<(), String> {
+    let key = (handoff_id, version_number, object_id);
+    let _guard = match try_lock_resume(state.resume_inflight.clone(), key) {
+        Ok(guard) => guard,
+        Err(_) => {
+            terminate_tus_location_unlocked(
+                &state.data_root,
+                handoff_id,
+                version_number,
+                object_id,
+                &access_token,
+            )
+            .await?;
+            lock_resume_for_abort(state.resume_inflight.clone(), key).await?
+        }
+    };
+    let mut record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    if matches!(
+        record.stage,
+        ResumeStage::TusTerminated | ResumeStage::UploadCompletedCleanup
+    ) {
+        return Ok(());
+    }
+    record.stage = ResumeStage::Aborting;
+    record.updated_at = resume::now_unix();
+    save_resume(&state.data_root, &record)?;
+    if let Some(location) = record.tus_location.clone() {
+        match tus::tus_delete(&access_token, &location).await {
+            TusDeleteResult::Terminated => mark_tus_terminated(&mut record),
+            TusDeleteResult::Conflict => {
+                let head = tus::tus_head(&access_token, &location).await;
+                match tus::decide_delete_conflict(&head) {
+                    DeleteConflictDecision::TusTerminated => mark_tus_terminated(&mut record),
+                    DeleteConflictDecision::UploadCompletedCleanup => {
+                        mark_upload_completed_cleanup(&mut record);
+                    }
+                    DeleteConflictDecision::KeepRecord => return Err(SEND_FAILED.to_string()),
+                }
+            }
+            TusDeleteResult::Transient | TusDeleteResult::Failed => {
+                return Err(SEND_FAILED.to_string());
+            }
+        }
+    } else {
+        mark_tus_terminated(&mut record);
+    }
+    save_resume(&state.data_root, &record)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn mark_resume_storage_removed(
+    state: State<AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+) -> Result<(), String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let mut record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    mark_storage_removed(&mut record)?;
+    save_resume(&state.data_root, &record)
+}
+
+#[tauri::command]
+pub fn ack_resume_finalized(
+    state: State<AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    finalize_client_request_id: Uuid,
+) -> Result<(), String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    ack_finalized(&record, finalize_client_request_id)?;
+    if let Some(snapshot_id) = record.snapshot_id {
+        remove_result_snapshot(&state, snapshot_id);
+    }
+    delete_resume_and_snapshot(&state.data_root, &record)
+}
+
+#[tauri::command]
+pub fn ack_resume_aborted(
+    state: State<AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    abort_client_request_id: Uuid,
+) -> Result<(), String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let mut record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    ack_aborted(&record, abort_client_request_id)?;
+    record.stage = ResumeStage::RpcConfirmed;
+    record.updated_at = resume::now_unix();
+    if let Some(snapshot_id) = record.snapshot_id {
+        remove_result_snapshot(&state, snapshot_id);
+    }
+    delete_resume_and_snapshot(&state.data_root, &record)
+}
+
+#[tauri::command]
+pub fn update_resume_reservation_expiry(
+    state: State<AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    pending_upload_expires_at: String,
+    renew_client_request_id: Uuid,
+) -> Result<(), String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let mut record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    if record.handoff_id != handoff_id
+        || record.version_number != version_number
+        || record.object_id != object_id
+    {
+        return Err(INVALID_STORAGE_PATH.to_string());
+    }
+    let storage_path = record.storage_path.clone();
+    validate_storage_path_ids_version(&storage_path, handoff_id, object_id, version_number)?;
+    update_expiry(&mut record, pending_upload_expires_at, renew_client_request_id)?;
+    save_resume(&state.data_root, &record)
+}
+
+fn resume_upload_result(record: &resume::ResumeRecord) -> ResumeUploadResult {
+    let finalize = record.stage == ResumeStage::UploadedWaitingFinalize;
+    ResumeUploadResult {
+        kind: record.kind,
+        stage: record.stage,
+        handoff_id: record.handoff_id,
+        transfer_id: record.transfer_id,
+        object_id: record.object_id,
+        version_number: record.version_number,
+        file_name: record.file_name.clone(),
+        expected_size: finalize.then_some(record.expected_size),
+        blake3: finalize.then(|| record.blake3.clone()),
+        finalize_client_request_id: finalize.then_some(record.finalize_client_request_id),
+        finalize_intent: finalize
+            .then(|| record.finalize_intent.as_ref().map(resume::FinalizeIntent::to_payload))
+            .flatten(),
+    }
+}
+
+fn peek_selection_path(state: &AppState, selection_id: Uuid) -> Result<PathBuf, String> {
+    state
+        .selections
+        .lock()
+        .expect("selection lock")
+        .get(&selection_id)
+        .cloned()
+        .ok_or_else(|| SELECTION_UNKNOWN.to_string())
+}
+
+pub(crate) fn list_resume_uploads_for(state: &AppState) -> Result<Vec<ResumeSummary>, String> {
+    resume::list_summaries(&state.data_root)
+}
+
+pub(crate) async fn resume_tus_upload_for(
+    state: &AppState,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    access_token: &str,
+) -> Result<ResumeUploadResult, String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    if record.stage == ResumeStage::UploadedWaitingFinalize {
+        return Ok(resume_upload_result(&record));
+    }
+    if matches!(
+        record.stage,
+        ResumeStage::Aborting
+            | ResumeStage::TusTerminated
+            | ResumeStage::UploadCompletedCleanup
+            | ResumeStage::StorageRemoved
+    ) {
+        return Ok(resume_upload_result(&record));
+    }
+    assert_reservation_fresh(&record)?;
+    if !snapshot_is_valid(&record) {
+        return Err(RESUME_SNAPSHOT_REQUIRED.to_string());
+    }
+    run_persistent_upload(&state.data_root, record, access_token).await?;
+    let updated = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    Ok(resume_upload_result(&updated))
+}
+
+pub(crate) fn restore_resume_snapshot_from_selection_for(
+    state: &AppState,
+    selection_id: Uuid,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+) -> Result<(), String> {
+    let _guard = try_lock_resume(
+        state.resume_inflight.clone(),
+        (handoff_id, version_number, object_id),
+    )?;
+    let mut record = load_resume(&state.data_root, handoff_id, version_number, object_id)?
+        .ok_or_else(|| SEND_FAILED.to_string())?;
+    let source = peek_selection_path(state, selection_id)?;
+    let file_name = snapshot_file_name(&source)?;
+    let (size, hash) = hash_path(&source)?;
+    if file_name != record.file_name || size != record.expected_size || hash != record.blake3 {
+        return Err(RESUME_FILE_MISMATCH.to_string());
+    }
+    let snapshot_id = Uuid::new_v4();
+    let dest = result_snapshot_disk_path(&state.data_root, record.handoff_id, snapshot_id);
+    if let Err(err) = copy_hashed(&source, &dest) {
+        let _ = fs::remove_file(&dest);
+        return Err(err);
+    }
+    let _ = take_selection_path(state, selection_id)?;
+    if let Some(old) = record.snapshot_path.take() {
+        let old_path = PathBuf::from(old);
+        if old_path.starts_with(tmp_dir(&state.data_root)) {
+            let _ = fs::remove_file(&old_path);
+        }
+    }
+    record.snapshot_id = Some(snapshot_id);
+    record.snapshot_path = Some(dest.to_string_lossy().into_owned());
+    record.source_path = Some(source.to_string_lossy().into_owned());
+    record.updated_at = resume::now_unix();
+    if let Err(err) = save_resume(&state.data_root, &record) {
+        let _ = fs::remove_file(&dest);
+        return Err(err);
+    }
+    state
+        .result_snapshots
+        .lock()
+        .expect("result snapshot lock")
+        .insert(
+            snapshot_id,
+            ResultSnapshot {
+                path: dest,
+                handoff_id: record.handoff_id,
+                transfer_id: record.transfer_id,
+                file_name: record.file_name.clone(),
+                size: record.expected_size,
+                blake3: record.blake3.clone(),
+                source_path: source,
+            },
+        );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_resume_uploads(state: State<AppState>) -> Result<Vec<ResumeSummary>, String> {
+    list_resume_uploads_for(&state)
+}
+
+#[tauri::command]
+pub async fn resume_tus_upload(
+    state: State<'_, AppState>,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+    access_token: String,
+) -> Result<ResumeUploadResult, String> {
+    resume_tus_upload_for(&state, handoff_id, version_number, object_id, &access_token).await
+}
+
+#[tauri::command]
+pub fn restore_resume_snapshot_from_selection(
+    state: State<AppState>,
+    selection_id: Uuid,
+    handoff_id: Uuid,
+    version_number: u16,
+    object_id: Uuid,
+) -> Result<(), String> {
+    restore_resume_snapshot_from_selection_for(
+        &state,
+        selection_id,
+        handoff_id,
+        version_number,
+        object_id,
+    )
 }
 
 fn parse_inbox_role(role: Option<&str>, version: u16) -> InboxRole {
@@ -1088,6 +1882,7 @@ pub fn take_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
     fn ids() -> (Uuid, Uuid, Uuid) {
         (
@@ -1353,15 +2148,23 @@ mod tests {
     fn transfer_source_uses_bearer_tus() {
         let source = include_str!("transfer.rs");
         let production = source.split("#[cfg(test)]").next().unwrap();
-        assert!(production.contains("Authorization"));
-        assert!(production.contains("Bearer {access_token}"));
+        let tus = include_str!("tus.rs");
+        let tus_prod = tus.split("#[cfg(test)]").next().unwrap();
+        assert!(tus_prod.contains("Authorization"));
+        assert!(tus_prod.contains("Bearer {access_token}"));
+        assert!(tus_prod.contains("x-upsert"));
         assert!(!production.contains("x-signature"));
         assert!(!production.contains("service_role"));
         assert!(!production.contains("reqwest::blocking"));
         assert!(production.contains("async fn tus_upload_v1"));
+        assert!(production.contains("async fn tus_upload_initial_v2"));
+        assert!(production.contains("async fn tus_upload_result"));
+        assert!(production.contains("async fn terminate_tus_location_unlocked"));
+        assert!(production.contains("async fn lock_resume_for_abort"));
+        assert!(production.contains("finalize_intent: resume::FinalizeIntent"));
         assert!(production.contains("async fn upload_resumable"));
+        assert!(production.contains("tus::upload_ephemeral"));
         assert!(production.contains("async fn download_inbox"));
-        assert!(production.contains("x-upsert"));
         assert!(production.contains("Policy::custom"));
         assert!(production.contains("is_allowed_redirect_url(attempt.url()"));
         assert!(production.contains(".part"));
@@ -1403,5 +2206,527 @@ mod tests {
         assert!(!is_allowed_redirect_url(&foreign, ref_id));
         assert!(!is_allowed_redirect_url(&other_ref, ref_id));
         assert!(!is_allowed_redirect_url(&odd_port, ref_id));
+    }
+
+    #[test]
+    fn v2_commands_exist_and_legacy_wrappers_do_not_persist_resume() {
+        let source = include_str!("transfer.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let v1 = production
+            .split("pub async fn tus_upload_v1")
+            .nth(1)
+            .unwrap()
+            .split("fn result_snapshot_disk_path")
+            .next()
+            .unwrap();
+        assert!(!v1.contains("save_resume"));
+        assert!(!v1.contains("ResumeRecord"));
+        let v2 = include_str!("watch.rs");
+        let v2_fn = v2
+            .split("pub async fn tus_upload_v2")
+            .nth(1)
+            .unwrap()
+            .split("pub fn recheck_on_focus")
+            .next()
+            .unwrap();
+        assert!(!v2_fn.contains("save_resume"));
+        assert!(!v2_fn.contains("ResumeRecord"));
+        assert!(production.contains("prepare_result_snapshot_from_selection"));
+        assert!(production.contains("prepare_result_snapshot_from_working_file"));
+        assert!(production.contains("update_resume_reservation_expiry"));
+        assert!(production.contains("ack_resume_finalized"));
+        assert!(production.contains("ack_resume_aborted"));
+        assert!(!production.contains("file_name: String,\n    pending_upload_expires_at"));
+        assert!(production.contains("snapshot.file_name.clone()"));
+        assert!(production.contains("try_lock_resume"));
+        assert!(!production.contains("legacy_return"));
+    }
+
+    #[test]
+    fn inbox_path_stays_inside_version_folder() {
+        let (workspace, handoff, _object) = ids();
+        let _ = workspace;
+        let root = std::env::temp_dir().join(format!("filerelay-inbox-bound-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let ok = final_inbox_path(&root, handoff, "דוח.docx", "v1").unwrap();
+        assert!(ok.ends_with(Path::new("v1").join("דוח.docx")));
+        assert!(final_inbox_path(&root, handoff, "..\\secret.txt", "v1").is_err());
+        assert!(final_inbox_path(&root, handoff, "a/b.txt", "v1").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn snapshot_from_another_transfer_is_rejected() {
+        let snapshot = ResultSnapshot {
+            path: PathBuf::from(r"C:\tmp\snap.part"),
+            handoff_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            transfer_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            file_name: "a.txt".into(),
+            size: 1,
+            blake3: "ab".repeat(32),
+            source_path: PathBuf::from(r"C:\tmp\src.txt"),
+        };
+        let other = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        assert_eq!(
+            assert_snapshot_binding(&snapshot, snapshot.handoff_id, other).unwrap_err(),
+            SNAPSHOT_UNKNOWN
+        );
+        assert!(assert_snapshot_binding(
+            &snapshot,
+            snapshot.handoff_id,
+            snapshot.transfer_id
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn working_file_snapshot_uses_inbox_and_omits_path() {
+        let root = std::env::temp_dir().join(format!("filerelay-work-snap-{}", Uuid::new_v4()));
+        let state = test_state(root.clone());
+        let (_workspace, handoff, _object) = ids();
+        let transfer = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        let dest = final_inbox_path(&root, handoff, "דוח.docx", "v1").unwrap();
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::write(&dest, b"working-bytes").unwrap();
+        let (size, hash) = hash_path(&dest).unwrap();
+        inbox::remember_version(
+            &root,
+            handoff,
+            "דוח.docx",
+            size,
+            &hash,
+            "v1",
+            InboxRole::Recipient,
+        )
+        .unwrap();
+        std::fs::write(&dest, b"edited-working").unwrap();
+        let prepared = store_result_snapshot_from_working_file(&state, handoff, transfer).unwrap();
+        assert_eq!(prepared.file_name, "דוח.docx");
+        assert_ne!(prepared.blake3, hash);
+        let text = serde_json::to_string(&prepared).unwrap();
+        assert!(text.contains("snapshotId"));
+        assert!(!text.contains("inbox"));
+        assert!(!text.contains("files"));
+        assert!(!text.contains("C:\\\\"));
+        assert!(!text.contains(&dest.to_string_lossy().to_string()));
+        let snapshot = state
+            .result_snapshots
+            .lock()
+            .expect("result snapshot lock")
+            .get(&prepared.snapshot_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(snapshot.handoff_id, handoff);
+        assert_eq!(snapshot.transfer_id, transfer);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn working_file_snapshot_rejects_path_outside_version_folder() {
+        let root = std::env::temp_dir().join(format!("filerelay-work-escape-{}", Uuid::new_v4()));
+        let state = test_state(root.clone());
+        let (_workspace, handoff, _object) = ids();
+        let transfer = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        inbox::remember_version(
+            &root,
+            handoff,
+            "..\\secret.txt",
+            4,
+            "ab",
+            "v1",
+            InboxRole::Recipient,
+        )
+        .unwrap();
+        assert!(store_result_snapshot_from_working_file(&state, handoff, transfer).is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn result_snapshot_payload_has_no_path_or_token() {
+        let payload = PreparedResultSnapshot {
+            snapshot_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            file_name: "דוח.docx".into(),
+            file_size: 4,
+            blake3: "ab".repeat(32),
+        };
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(text.contains("snapshotId"));
+        assert!(text.contains("fileName"));
+        assert!(!text.contains("token"));
+        assert!(!text.contains("tmp"));
+        assert!(!text.contains("C:\\\\"));
+    }
+
+    #[test]
+    fn mutex_is_not_held_across_network_or_hash() {
+        let source = include_str!("transfer.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(production.contains("try_lock_resume"));
+        assert!(!production.contains("resume_inflight.lock().expect(\"resume inflight lock\")"));
+        let resume = include_str!("resume.rs");
+        let resume_prod = resume.split("#[cfg(test)]").next().unwrap();
+        assert!(resume_prod.contains("held.insert(key)"));
+        assert!(resume_prod.contains("Ok(ResumeGuard"));
+    }
+
+    #[test]
+    fn upload_completed_cleanup_does_not_patch() {
+        let root = std::env::temp_dir().join(format!("filerelay-cleanup-{}", Uuid::new_v4()));
+        crate::paths::ensure_data_layout(&root).unwrap();
+        let handoff = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let transfer = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        let object = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        let mut record = resume::new_record(
+            ResumeKind::Initial,
+            handoff,
+            transfer,
+            object,
+            1,
+            format!("{handoff}/{handoff}/v1/{object}"),
+            "a.bin".into(),
+            4,
+            "ab".repeat(32),
+            "2099-01-01T00:00:00Z".into(),
+            Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+            Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+            Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap(),
+            Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap(),
+            root.join("files").join("tmp").join("snap.part"),
+            None,
+        )
+        .unwrap();
+        record.tus_location = Some("https://example.invalid/storage/v1/upload/resumable/x".into());
+        resume::mark_upload_completed_cleanup(&mut record);
+        resume::save_resume(&root, &record).unwrap();
+        let err = tauri::async_runtime::block_on(run_persistent_upload(&root, record, "token"))
+            .unwrap_err();
+        assert_eq!(err, SEND_FAILED);
+        let loaded = resume::load_resume(&root, handoff, 1, object)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.stage, ResumeStage::UploadCompletedCleanup);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn test_state(root: PathBuf) -> AppState {
+        crate::paths::ensure_data_layout(&root).unwrap();
+        AppState {
+            data_root: root,
+            local_device: Mutex::new(None),
+            auth_lock: Mutex::new(()),
+            selections: Mutex::new(std::collections::HashMap::new()),
+            snapshots: Mutex::new(std::collections::HashMap::new()),
+            result_snapshots: Mutex::new(std::collections::HashMap::new()),
+            resume_inflight: std::sync::Arc::new(Mutex::new(std::collections::HashSet::new())),
+            watches: Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn sample_resume(root: &Path, file_name: &str, bytes: &[u8]) -> resume::ResumeRecord {
+        let snap = root.join("files").join("tmp").join("snap.part");
+        if let Some(parent) = snap.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&snap, bytes).unwrap();
+        let (size, hash) = hash_path(&snap).unwrap();
+        let (workspace, handoff, object) = ids();
+        let _ = workspace;
+        let transfer = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        let mut record = resume::new_record(
+            ResumeKind::Initial,
+            handoff,
+            transfer,
+            object,
+            1,
+            format!("{handoff}/{handoff}/v1/{object}"),
+            file_name.into(),
+            size,
+            hash,
+            "2099-01-01T00:00:00Z".into(),
+            Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+            Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+            Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap(),
+            Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap(),
+            snap.clone(),
+            None,
+        )
+        .unwrap();
+        record.snapshot_path = Some(snap.to_string_lossy().into_owned());
+        record
+    }
+
+    #[test]
+    fn public_resume_commands_cover_restart_without_leaking_secrets() {
+        let root = std::env::temp_dir().join(format!("filerelay-restart-api-{}", Uuid::new_v4()));
+        let work = root.join("work.docx");
+        std::fs::create_dir_all(root.join("files").join("tmp")).unwrap();
+        std::fs::write(&work, b"same-bytes").unwrap();
+        let mut record = sample_resume(&root, "work.docx", b"same-bytes");
+        record.stage = ResumeStage::Uploading;
+        record.last_offset = 1_048_576;
+        record.tus_location = Some("https://example.invalid/storage/v1/upload/resumable/x".into());
+        resume::save_resume(&root, &record).unwrap();
+
+        let first = test_state(root.clone());
+        let listed = list_resume_uploads_for(&first).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].stage, ResumeStage::Uploading);
+        let listed_text = serde_json::to_string(&listed).unwrap();
+        assert!(listed_text.contains("storagePath"));
+        assert_eq!(listed[0].storage_path, record.storage_path);
+        assert!(!listed_text.contains("blake3"));
+        assert!(!listed_text.contains("tusLocation"));
+        assert!(!listed_text.contains("sourcePath"));
+        assert!(!listed_text.contains("finalizeIntent"));
+        assert!(!listed_text.contains("resultAction"));
+        assert!(!listed_text.contains(&record.blake3));
+
+        let offset_before = record.last_offset;
+        let uploading = tauri::async_runtime::block_on(resume_tus_upload_for(
+            &first,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+            "token",
+        ));
+        assert!(uploading.is_err());
+        let still = resume::load_resume(
+            &root,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(still.last_offset, offset_before);
+        assert_eq!(still.stage, ResumeStage::Uploading);
+
+        record.stage = ResumeStage::UploadedWaitingFinalize;
+        record.kind = ResumeKind::Result;
+        record.finalize_intent = Some(resume::FinalizeIntent {
+            result_action: "returned_with_file".into(),
+            result_note: None,
+        });
+        resume::save_resume(&root, &record).unwrap();
+        drop(first);
+        let restarted = test_state(root.clone());
+        let finalized = tauri::async_runtime::block_on(resume_tus_upload_for(
+            &restarted,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+            "token",
+        ))
+        .unwrap();
+        assert_eq!(finalized.stage, ResumeStage::UploadedWaitingFinalize);
+        assert_eq!(finalized.expected_size, Some(record.expected_size));
+        assert_eq!(finalized.blake3.as_deref(), Some(record.blake3.as_str()));
+        assert_eq!(
+            finalized.finalize_client_request_id,
+            Some(record.finalize_client_request_id)
+        );
+        assert_eq!(
+            finalized
+                .finalize_intent
+                .as_ref()
+                .map(|intent| intent.result_action.as_str()),
+            Some("returned_with_file")
+        );
+
+        record.stage = ResumeStage::UploadCompletedCleanup;
+        resume::save_resume(&root, &record).unwrap();
+        let cleanup = tauri::async_runtime::block_on(resume_tus_upload_for(
+            &restarted,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+            "token",
+        ))
+        .unwrap();
+        assert_eq!(cleanup.stage, ResumeStage::UploadCompletedCleanup);
+        assert!(cleanup.blake3.is_none());
+        assert!(cleanup.expected_size.is_none());
+        assert!(cleanup.finalize_intent.is_none());
+
+        let snap = PathBuf::from(record.snapshot_path.as_ref().unwrap());
+        std::fs::remove_file(&snap).unwrap();
+        record.stage = ResumeStage::Uploading;
+        resume::save_resume(&root, &record).unwrap();
+        let missing = tauri::async_runtime::block_on(resume_tus_upload_for(
+            &restarted,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+            "token",
+        ))
+        .unwrap_err();
+        assert_eq!(missing, resume::RESUME_SNAPSHOT_REQUIRED);
+
+        let other = root.join("other.docx");
+        std::fs::write(&other, b"different").unwrap();
+        let other_id = Uuid::parse_str("88888888-8888-4888-8888-888888888888").unwrap();
+        restarted
+            .selections
+            .lock()
+            .unwrap()
+            .insert(other_id, other.clone());
+        let before = std::fs::read(crate::paths::resume_file_path(
+            &root,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+        ))
+        .unwrap();
+        assert_eq!(
+            restore_resume_snapshot_from_selection_for(
+                &restarted,
+                other_id,
+                record.handoff_id,
+                record.version_number,
+                record.object_id,
+            )
+            .unwrap_err(),
+            resume::RESUME_FILE_MISMATCH
+        );
+        assert_eq!(
+            std::fs::read(crate::paths::resume_file_path(
+                &root,
+                record.handoff_id,
+                record.version_number,
+                record.object_id,
+            ))
+            .unwrap(),
+            before
+        );
+        assert!(restarted.selections.lock().unwrap().contains_key(&other_id));
+
+        let match_id = Uuid::parse_str("99999999-9999-4999-8999-999999999999").unwrap();
+        restarted
+            .selections
+            .lock()
+            .unwrap()
+            .insert(match_id, work.clone());
+        restore_resume_snapshot_from_selection_for(
+            &restarted,
+            match_id,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+        )
+        .unwrap();
+        assert!(!restarted.selections.lock().unwrap().contains_key(&match_id));
+        let restored = resume::load_resume(
+            &root,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(restored.reservation_client_request_id, record.reservation_client_request_id);
+        assert_eq!(restored.finalize_client_request_id, record.finalize_client_request_id);
+        assert_eq!(restored.abort_client_request_id, record.abort_client_request_id);
+        assert_eq!(restored.object_id, record.object_id);
+        assert_eq!(restored.storage_path, record.storage_path);
+        assert_eq!(restored.version_number, record.version_number);
+        assert!(resume::snapshot_is_valid(&restored));
+        assert_eq!(restored.stage, ResumeStage::Uploading);
+
+        let _guard = resume::try_lock_resume(
+            restarted.resume_inflight.clone(),
+            (record.handoff_id, record.version_number, record.object_id),
+        )
+        .unwrap();
+        let busy = tauri::async_runtime::block_on(resume_tus_upload_for(
+            &restarted,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+            "token",
+        ))
+        .unwrap_err();
+        assert_eq!(busy, resume::RESUME_BUSY);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn resume_commands_do_not_log_finalize_hash() {
+        let source = include_str!("transfer.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        let resume_fn = production
+            .split("pub async fn resume_tus_upload(")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]")
+            .next()
+            .unwrap();
+        assert!(!resume_fn.contains("eprintln"));
+        assert!(!resume_fn.contains("println"));
+        let list_fn = production
+            .split("pub fn list_resume_uploads(")
+            .nth(1)
+            .unwrap()
+            .split("#[tauri::command]")
+            .next()
+            .unwrap();
+        assert!(!list_fn.contains("blake3"));
+    }
+
+    #[test]
+    fn expired_reservation_blocks_public_resume_without_write() {
+        let root = std::env::temp_dir().join(format!("filerelay-resume-exp-{}", Uuid::new_v4()));
+        let mut record = sample_resume(&root, "a.bin", b"data");
+        record.stage = ResumeStage::TusCreated;
+        record.pending_upload_expires_at = "2000-01-01T00:00:00Z".into();
+        resume::save_resume(&root, &record).unwrap();
+        let before = std::fs::read(crate::paths::resume_file_path(
+            &root,
+            record.handoff_id,
+            record.version_number,
+            record.object_id,
+        ))
+        .unwrap();
+        let state = test_state(root.clone());
+        assert_eq!(
+            tauri::async_runtime::block_on(resume_tus_upload_for(
+                &state,
+                record.handoff_id,
+                record.version_number,
+                record.object_id,
+                "token",
+            ))
+            .unwrap_err(),
+            resume::RESERVATION_RENEWAL_REQUIRED
+        );
+        assert_eq!(
+            std::fs::read(crate::paths::resume_file_path(
+                &root,
+                record.handoff_id,
+                record.version_number,
+                record.object_id,
+            ))
+            .unwrap(),
+            before
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn corrupt_resume_is_rejected_without_write() {
+        let root = std::env::temp_dir().join(format!("filerelay-resume-bad-{}", Uuid::new_v4()));
+        crate::paths::ensure_data_layout(&root).unwrap();
+        let handoff = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let object = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        let path = crate::paths::resume_file_path(&root, handoff, 1, object);
+        std::fs::write(&path, "{not-json").unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let state = test_state(root.clone());
+        assert!(tauri::async_runtime::block_on(resume_tus_upload_for(
+            &state, handoff, 1, object, "token"
+        ))
+        .is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(list_resume_uploads_for(&state).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

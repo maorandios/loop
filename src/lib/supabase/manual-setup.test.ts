@@ -102,30 +102,58 @@ describe("manual-setup SECURITY DEFINER hardening", () => {
     const sql = readSql();
     const definers = definerFunctions(sql);
     expect(definers.map((fn) => fn.name).sort()).toEqual([
+      "private.assert_handoff_original_filename",
+      "private.assert_reserved_upload_matches",
+      "private.assert_v2_open_root",
+      "private.can_delete_handoff_object",
+      "private.can_delete_reserved_handoff_object",
       "private.can_read_handoff_object",
       "private.can_upload_handoff_object",
+      "private.claim_command_receipt",
+      "private.finish_command_receipt",
+      "private.handoff_readable",
+      "private.handoff_transfers_active_status_ok",
+      "private.handoffs_active_transfer_status_ok",
+      "private.insert_handoff_version",
       "private.is_handoff_participant",
       "private.is_workspace_member",
+      "private.reject_if_flow_v2",
       "private.touch_handoff_updated_at",
+      "public.abort_transfer_result_upload",
+      "public.accept_root_transfer_result",
       "public.begin_handoff_return",
       "public.begin_handoff_return_next",
+      "public.begin_transfer_result_upload",
+      "public.cancel_root_handoff_v2",
       "public.complete_handoff",
+      "public.create_file_request_v2",
       "public.create_handoff",
+      "public.create_handoff_v2",
       "public.create_handoff_with_context",
       "public.create_workspace",
       "public.fail_handoff",
       "public.fail_handoff_return",
+      "public.fail_handoff_v2_initial",
+      "public.finalize_file_request_result",
       "public.finalize_handoff_return",
       "public.finalize_handoff_return_v2",
       "public.finalize_handoff_v1",
+      "public.finalize_handoff_v2_initial",
+      "public.finalize_transfer_result",
       "public.join_workspace",
       "public.mark_handoff_modified",
       "public.mark_handoff_opened",
       "public.mark_handoff_received",
       "public.mark_handoff_unmodified",
       "public.mark_return_received",
+      "public.mark_root_transfer_opened",
+      "public.renew_transfer_upload_reservation",
       "public.request_revision",
+      "public.request_root_transfer_revision",
+      "public.retry_handoff_v2_initial",
       "public.rotate_workspace_join_code",
+      "public.send_transfer_reminder",
+      "public.submit_transfer_result_without_file",
     ]);
     for (const fn of definers) {
       expect(fn.header).toContain("SET search_path = ''");
@@ -146,7 +174,7 @@ describe("manual-setup SECURITY DEFINER hardening", () => {
     );
 
     const unqualified =
-      /\b(?:FROM|JOIN|INTO|UPDATE)\s+(workspaces|workspace_members|handoffs|handoff_versions|handoff_events)\b/i;
+      /\b(?:FROM|JOIN|INTO|UPDATE)\s+(workspaces|workspace_members|handoffs|handoff_versions|handoff_events|handoff_transfers|handoff_command_receipts)\b/i;
     for (const fn of definerFunctions(sql)) {
       expect(fn.body).not.toMatch(unqualified);
     }
@@ -158,30 +186,49 @@ describe("manual-setup SECURITY DEFINER hardening", () => {
       ([, fn, role]) => ({ fn, role: role?.trim() }),
     );
     expect([...new Set(grants.map((row) => row.fn))].sort()).toEqual([
+      "private.can_delete_handoff_object(text)",
+      "private.can_delete_reserved_handoff_object(text)",
       "private.can_read_handoff_object(text)",
       "private.can_upload_handoff_object(text)",
+      "private.handoff_readable(uuid)",
       "private.handoff_status_visible_to_recipient(text)",
       "private.is_handoff_participant(uuid)",
       "private.is_workspace_member(uuid)",
+      "public.abort_transfer_result_upload(uuid, uuid)",
+      "public.accept_root_transfer_result(uuid, uuid)",
       "public.begin_handoff_return(uuid)",
       "public.begin_handoff_return_next(uuid)",
+      "public.begin_transfer_result_upload(uuid, uuid)",
+      "public.cancel_root_handoff_v2(uuid, uuid)",
       "public.complete_handoff(uuid)",
+      "public.create_file_request_v2(uuid, text, date, uuid)",
       "public.create_handoff(uuid, text)",
+      "public.create_handoff_v2(uuid, text, text, text, date, uuid)",
       "public.create_handoff_with_context(uuid, text, text, date)",
       "public.create_workspace(text, uuid)",
       "public.fail_handoff(uuid)",
       "public.fail_handoff_return(uuid)",
+      "public.fail_handoff_v2_initial(uuid, uuid)",
+      "public.finalize_file_request_result(uuid, text, uuid, bigint, text, uuid)",
       "public.finalize_handoff_return(uuid, integer, uuid, bigint, text)",
       "public.finalize_handoff_return_v2(uuid, uuid, bigint, text)",
       "public.finalize_handoff_v1(uuid, uuid, bigint, text)",
+      "public.finalize_handoff_v2_initial(uuid, uuid, bigint, text, uuid)",
+      "public.finalize_transfer_result(uuid, text, text, uuid, bigint, text, uuid)",
       "public.join_workspace(text, text, uuid)",
       "public.mark_handoff_modified(uuid)",
       "public.mark_handoff_opened(uuid)",
       "public.mark_handoff_received(uuid)",
       "public.mark_handoff_unmodified(uuid)",
       "public.mark_return_received(uuid)",
+      "public.mark_root_transfer_opened(uuid, uuid)",
+      "public.renew_transfer_upload_reservation(uuid, uuid)",
       "public.request_revision(uuid, text)",
+      "public.request_root_transfer_revision(uuid, text, uuid)",
+      "public.retry_handoff_v2_initial(uuid, uuid)",
       "public.rotate_workspace_join_code(uuid)",
+      "public.send_transfer_reminder(uuid, uuid)",
+      "public.submit_transfer_result_without_file(uuid, text, text, uuid)",
     ]);
     expect(grants.every((row) => row.role === "authenticated")).toBe(true);
     expect(sql).not.toMatch(/GRANT EXECUTE[^;]*TO anon/i);
@@ -196,6 +243,18 @@ describe("manual-setup SECURITY DEFINER hardening", () => {
     );
     expect(sql).toContain(
       "REVOKE ALL ON FUNCTION private.try_parse_handoff_object(text) FROM PUBLIC, anon, authenticated",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION private.assert_safe_file_name(text) FROM PUBLIC, anon, authenticated",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION private.insert_handoff_version(uuid, integer, text, bigint, text, uuid, text) FROM PUBLIC, anon, authenticated",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION private.assert_reserved_upload_matches(uuid, uuid, uuid, uuid, bigint, uuid, integer, text, text) FROM PUBLIC, anon, authenticated",
+    );
+    expect(sql).toContain(
+      "REVOKE ALL ON FUNCTION private.assert_handoff_original_filename() FROM PUBLIC, anon, authenticated",
     );
     expect(sql).toContain("REVOKE ALL ON SCHEMA private FROM PUBLIC, anon, authenticated");
     expect(sql).not.toContain("GRANT USAGE ON SCHEMA private TO anon");
@@ -276,6 +335,10 @@ describe("manual-setup handoff and storage hardening", () => {
       "REVOKE INSERT, UPDATE, DELETE ON public.handoff_events FROM PUBLIC, anon, authenticated",
     );
     expect(sql).toContain("GRANT SELECT ON public.handoffs TO authenticated");
+    expect(sql).toContain("GRANT SELECT ON public.handoff_transfers TO authenticated");
+    expect(sql).toContain(
+      "REVOKE ALL ON public.handoff_command_receipts FROM PUBLIC, anon, authenticated",
+    );
     expect(sql).not.toContain("GRANT SELECT, INSERT ON public.handoffs TO authenticated");
     expect(sql).not.toContain("GRANT UPDATE (status) ON public.handoffs TO authenticated");
     expect(sql).not.toMatch(/CREATE POLICY handoffs_update_participant\b/);
@@ -288,21 +351,19 @@ describe("manual-setup handoff and storage hardening", () => {
     const sql = readSql();
     const selectPolicy =
       sql.match(/CREATE POLICY handoffs_select_participant[\s\S]*?;/)?.[0] ?? "";
-    expect(selectPolicy).toContain("sender.user_id = auth.uid()");
-    expect(selectPolicy).toContain("recipient.user_id = auth.uid()");
-    expect(selectPolicy).toContain("handoffs.sender_member_id");
-    expect(selectPolicy).toContain("handoffs.recipient_member_id");
-    expect(selectPolicy).toContain("private.handoff_status_visible_to_recipient(handoffs.status)");
+    expect(selectPolicy).toContain("private.handoff_readable(id)");
     expect(selectPolicy).not.toContain("is_workspace_member");
-    expect(selectPolicy).not.toContain("status <> 'uploading'");
+    const readable =
+      sql.match(/CREATE OR REPLACE FUNCTION private\.handoff_readable[\s\S]*?\$\$;/)?.[0] ?? "";
+    expect(readable).toContain("private.handoff_status_visible_to_recipient(h.status)");
+    expect(readable).toContain("'preparing', 'failed'");
+    expect(readable).toContain("active_hop.from_member_id");
     const versionsSelect =
       sql.match(/CREATE POLICY handoff_versions_select_participant[\s\S]*?;/)?.[0] ?? "";
-    expect(versionsSelect).toContain("h.id = handoff_versions.handoff_id");
-    expect(versionsSelect).toContain("private.handoff_status_visible_to_recipient(h.status)");
+    expect(versionsSelect).toContain("private.handoff_readable(handoff_id)");
     const eventsSelect =
       sql.match(/CREATE POLICY handoff_events_select_participant[\s\S]*?;/)?.[0] ?? "";
-    expect(eventsSelect).toContain("h.id = handoff_events.handoff_id");
-    expect(eventsSelect).toContain("private.handoff_status_visible_to_recipient(h.status)");
+    expect(eventsSelect).toContain("private.handoff_readable(handoff_id)");
   });
 
   it("mutates handoffs only through SECURITY DEFINER RPCs", () => {
@@ -332,9 +393,9 @@ describe("manual-setup handoff and storage hardening", () => {
     expect(sql).toContain("DROP POLICY IF EXISTS filerelay_storage_update ON storage.objects");
     expect(sql).toContain("DROP POLICY IF EXISTS filerelay_storage_delete ON storage.objects");
     expect(sql).not.toMatch(/CREATE POLICY filerelay_storage_update\b/);
-    expect(sql).not.toMatch(/CREATE POLICY filerelay_storage_delete\b/);
+    expect(sql).toContain("CREATE POLICY filerelay_storage_delete");
     expect(sql).not.toMatch(/CREATE POLICY[\s\S]*ON storage\.objects\s+FOR UPDATE/i);
-    expect(sql).not.toMatch(/CREATE POLICY[\s\S]*ON storage\.objects\s+FOR DELETE/i);
+    expect(sql).toContain("private.can_delete_reserved_handoff_object(name)");
 
     const upload =
       sql.match(

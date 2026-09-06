@@ -1,3 +1,7 @@
+export type PostgresChangePayload = {
+  new?: { id?: string };
+};
+
 export type PostgresChangesChannel = {
   on: (
     type: "postgres_changes",
@@ -5,9 +9,9 @@ export type PostgresChangesChannel = {
       event: string;
       schema: string;
       table: string;
-      filter: string;
+      filter?: string;
     },
-    callback: () => void,
+    callback: (payload: PostgresChangePayload) => void,
   ) => PostgresChangesChannel;
   subscribe: (callback?: (status: string) => void) => PostgresChangesChannel;
 };
@@ -29,6 +33,12 @@ export type MemberSubscriptionOptions = {
   timers?: MemberSubscriptionTimers;
   maxRetries?: number;
   baseDelayMs?: number;
+  event?: string;
+  filter?: string | null;
+  notifyOnSubscribed?: boolean;
+  onSubscribed?: () => void;
+  onDisconnected?: () => void;
+  onPayload?: (payload: PostgresChangePayload) => void;
 };
 
 const defaultTimers: MemberSubscriptionTimers = {
@@ -45,13 +55,15 @@ function subscribePostgresTable(
   },
   channelName: string,
   table: string,
-  filter: string,
+  filter: string | null,
   onChange: () => void,
   options: MemberSubscriptionOptions = {},
 ): () => void {
   const timers = options.timers ?? defaultTimers;
   const maxRetries = options.maxRetries ?? 8;
   const baseDelayMs = options.baseDelayMs ?? 1000;
+  const event = options.event ?? "*";
+  const notifyOnSubscribed = options.notifyOnSubscribed ?? true;
   let stopped = false;
   let channel: PostgresChangesChannel | null = null;
   let retries = 0;
@@ -90,35 +102,48 @@ function subscribePostgresTable(
     if (stopped) {
       return;
     }
-    channel = client
-      .channel(channelName)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table,
-          filter,
-        },
-        () => {
-          if (!stopped) {
-            onChange();
-          }
-        },
-      )
-      .subscribe((status: string) => {
-        if (stopped) {
+    const filterSpec: {
+      event: string;
+      schema: string;
+      table: string;
+      filter?: string;
+    } = {
+      event,
+      schema: "public",
+      table,
+    };
+    if (filter) {
+      filterSpec.filter = filter;
+    }
+    const created = client.channel(channelName).on(
+      "postgres_changes",
+      filterSpec,
+      (payload: PostgresChangePayload) => {
+        if (stopped || created !== channel) {
           return;
         }
-        if (status === "SUBSCRIBED") {
-          retries = 0;
+        options.onPayload?.(payload);
+        onChange();
+      },
+    );
+    channel = created;
+    created.subscribe((status: string) => {
+      if (stopped || created !== channel) {
+        return;
+      }
+      if (status === "SUBSCRIBED") {
+        retries = 0;
+        options.onSubscribed?.();
+        if (notifyOnSubscribed) {
           onChange();
-          return;
         }
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          scheduleRetry();
-        }
-      });
+        return;
+      }
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        options.onDisconnected?.();
+        scheduleRetry();
+      }
+    });
   }
 
   attach();
@@ -164,7 +189,7 @@ export function subscribeIncomingHandoffs(
     "handoffs",
     `recipient_member_id=eq.${recipientMemberId}`,
     onChange,
-    options,
+    { notifyOnSubscribed: false, ...options },
   );
 }
 
@@ -183,6 +208,33 @@ export function subscribeOutgoingHandoffs(
     "handoffs",
     `sender_member_id=eq.${senderMemberId}`,
     onChange,
-    options,
+    { notifyOnSubscribed: false, ...options },
+  );
+}
+
+export function subscribeHandoffEvents(
+  client: {
+    channel: (name: string) => any;
+    removeChannel: (channel: any) => Promise<unknown> | unknown;
+  },
+  memberId: string,
+  onEvent: (eventId: string | null) => void,
+  options: MemberSubscriptionOptions = {},
+): () => void {
+  return subscribePostgresTable(
+    client,
+    `handoff-events-${memberId}`,
+    "handoff_events",
+    null,
+    () => undefined,
+    {
+      event: "INSERT",
+      notifyOnSubscribed: false,
+      ...options,
+      onPayload: (payload) => {
+        options.onPayload?.(payload);
+        onEvent(typeof payload.new?.id === "string" ? payload.new.id : null);
+      },
+    },
   );
 }

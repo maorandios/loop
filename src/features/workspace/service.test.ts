@@ -17,5 +17,6 @@ describe("live workspace service source", () => {
     expect(app).toContain("refreshMembers");
     expect(app).toContain("subscribeToWorkspaceMembers");
     expect(app).toContain("subscribeToIncomingHandoffs");
+    expect(app).toContain("subscribeToHandoffEvents");
   });
 });

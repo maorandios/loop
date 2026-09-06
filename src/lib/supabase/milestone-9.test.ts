@@ -38,16 +38,7 @@ const M9_RPCS = [
 
 const SHARED_BODIES = [
   "private.try_parse_handoff_object(",
-  "private.can_read_handoff_object(object_name text)",
-  "private.can_upload_handoff_object(object_name text)",
   "private.reject_if_completed(p_status text)",
-  "public.mark_handoff_opened(handoff_id uuid)",
-  "public.mark_handoff_modified(handoff_id uuid)",
-  "public.create_handoff_with_context(",
-  "public.begin_handoff_return_next(handoff_id uuid)",
-  "public.finalize_handoff_return(",
-  "public.complete_handoff(handoff_id uuid)",
-  "public.request_revision(handoff_id uuid, note text)",
 ] as const;
 
 describe("Milestone 9 SQL files", () => {
@@ -115,7 +106,7 @@ describe("0.1.0 compatibility after M9", () => {
     const markReturn = functionBody(setup(), "public.mark_return_received(handoff_id uuid)");
     expect(create).toContain("'/v1/'");
     expect(create).not.toContain("instruction");
-    expect(create).toContain("status\n  )\n  VALUES (");
+    expect(create).toContain("status,\n    flow_version\n  )\n  VALUES (");
     expect(create).toContain("'uploading'");
     expect(begin).toContain("'/v2/'");
     expect(begin).toContain("IS DISTINCT FROM 'modified'");
@@ -179,8 +170,8 @@ describe("M9 RPCs", () => {
     expect(beginNext).toContain("v_next > 1000");
     expect(finalize).toContain("FOR UPDATE");
     expect(finalize).toContain("version_number IS DISTINCT FROM v_expected");
-    expect(finalize).toContain("INSERT INTO public.handoff_versions");
-    expect(finalize.indexOf("INSERT INTO public.handoff_versions")).toBeLessThan(
+    expect(finalize).toContain("private.insert_handoff_version(");
+    expect(finalize.indexOf("private.insert_handoff_version(")).toBeLessThan(
       finalize.indexOf("SET status = 'returned'"),
     );
     expect(finalize).not.toContain("UPDATE public.handoff_versions");
@@ -305,7 +296,7 @@ describe("canonical versions and helpers", () => {
       setup(),
       "private.handoff_status_visible_to_recipient(p_status text)",
     );
-    expect(readFn).toContain("private.is_handoff_participant(h.id)");
+    expect(readFn).toContain("private.handoff_readable(h.id)");
     expect(readFn).toContain("hv.storage_path = object_name");
     expect(upload).toContain("h.status = 'uploading'");
     expect(upload).toContain("h.status = 'returning'");

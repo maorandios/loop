@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,10 +11,14 @@ use crate::inbox::{
     acknowledge_sync, apply_hash_result, load_inbox, pending_statuses, save_inbox, InboxRole,
     LocalStateEvent, PendingLocalStatus,
 };
-use crate::paths::{inbox_dir, inbox_version_dir, is_return_snapshot_filename, tmp_dir, version_folder_name};
+use crate::paths::{
+    inbox_dir, inbox_version_dir, is_result_snapshot_filename, is_return_snapshot_filename, tmp_dir,
+    version_folder_name,
+};
+use crate::resume;
 use crate::state::{ActiveWatch, AppState, ReturnSnapshot};
 use crate::transfer::{
-    hash_path, is_file_busy, upload_resumable, validate_storage_path_ids_version, FILE_BUSY,
+    hash_path, upload_resumable, validate_storage_path_ids_version, FILE_BUSY,
     FILE_CHANGED_DURING_RETURN, FILE_TOO_LARGE, MAX_FILE_SIZE, SEND_FAILED,
 };
 
@@ -39,15 +43,19 @@ pub fn cleanup_orphan_snapshots(root: &Path) -> Result<(), String> {
         Err(_) => return Ok(()),
         Ok(entries) => entries,
     };
+    let referenced = resume::referenced_snapshot_paths(root);
     for entry in entries.flatten() {
         let path = entry.path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !is_return_snapshot_filename(name) {
+        if !is_return_snapshot_filename(name) && !is_result_snapshot_filename(name) {
             continue;
         }
         if path.starts_with(inbox_dir(root)) {
+            continue;
+        }
+        if referenced.contains(&path) {
             continue;
         }
         if path.starts_with(&dir) && path.is_file() {
@@ -331,50 +339,6 @@ fn hash_or_busy(path: &Path) -> Result<(u64, String), String> {
     })
 }
 
-fn copy_hashed(src: &Path, dest: &Path) -> Result<(u64, String), String> {
-    let mut input = std::fs::File::open(src).map_err(|err| {
-        if is_file_busy(&err) {
-            FILE_BUSY.to_string()
-        } else {
-            SEND_FAILED.to_string()
-        }
-    })?;
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| SEND_FAILED.to_string())?;
-    }
-    let mut output = std::fs::File::create(dest).map_err(|_| SEND_FAILED.to_string())?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 65_536];
-    let mut size = 0u64;
-    loop {
-        use std::io::Read;
-        let n = input
-            .read(&mut buf)
-            .map_err(|err| {
-                if is_file_busy(&err) {
-                    FILE_BUSY.to_string()
-                } else {
-                    SEND_FAILED.to_string()
-                }
-            })?;
-        if n == 0 {
-            break;
-        }
-        size += n as u64;
-        if size > MAX_FILE_SIZE {
-            return Err(FILE_TOO_LARGE.to_string());
-        }
-        hasher.update(&buf[..n]);
-        std::io::Write::write_all(&mut output, &buf[..n]).map_err(|_| SEND_FAILED.to_string())?;
-    }
-    output.flush().map_err(|_| SEND_FAILED.to_string())?;
-    output.sync_all().map_err(|_| SEND_FAILED.to_string())?;
-    if size == 0 {
-        return Err(SEND_FAILED.to_string());
-    }
-    Ok((size, hasher.finalize().to_hex().to_string()))
-}
-
 #[tauri::command]
 pub fn prepare_return_snapshot(
     state: State<AppState>,
@@ -394,7 +358,7 @@ pub fn prepare_return_snapshot(
     }
     let snapshot_id = Uuid::new_v4();
     let dest = snapshot_tmp_path(&state.data_root, handoff_id, snapshot_id);
-    let copied = match copy_hashed(&src, &dest) {
+    let copied = match crate::transfer::copy_hashed(&src, &dest) {
         Ok(copied) => copied,
         Err(err) => {
             let _ = std::fs::remove_file(&dest);

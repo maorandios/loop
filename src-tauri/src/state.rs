@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
@@ -10,6 +10,7 @@ use crate::identity::{
     create_local_device, load_local_device, normalize_display_name, LocalDevice, STATE_VERSION,
 };
 use crate::paths::{ensure_data_layout, resolve_data_root, state_file_path};
+use crate::resume::ResumeKey;
 use notify::RecommendedWatcher;
 use uuid::Uuid;
 
@@ -26,6 +27,17 @@ pub struct ReturnSnapshot {
     pub blake3: String,
 }
 
+#[derive(Clone)]
+pub struct ResultSnapshot {
+    pub path: PathBuf,
+    pub handoff_id: Uuid,
+    pub transfer_id: Uuid,
+    pub file_name: String,
+    pub size: u64,
+    pub blake3: String,
+    pub source_path: PathBuf,
+}
+
 pub struct ActiveWatch {
     pub _watcher: RecommendedWatcher,
     pub generation: u64,
@@ -38,6 +50,8 @@ pub struct AppState {
     pub auth_lock: Mutex<()>,
     pub selections: Mutex<HashMap<Uuid, PathBuf>>,
     pub snapshots: Mutex<HashMap<Uuid, ReturnSnapshot>>,
+    pub result_snapshots: Mutex<HashMap<Uuid, ResultSnapshot>>,
+    pub resume_inflight: Arc<Mutex<HashSet<ResumeKey>>>,
     pub watches: Mutex<HashMap<Uuid, ActiveWatch>>,
 }
 
@@ -81,6 +95,8 @@ pub fn init_app_state<R: Runtime>(app: &AppHandle<R>) -> Result<AppState, String
         auth_lock: Mutex::new(()),
         selections: Mutex::new(HashMap::new()),
         snapshots: Mutex::new(HashMap::new()),
+        result_snapshots: Mutex::new(HashMap::new()),
+        resume_inflight: Arc::new(Mutex::new(HashSet::new())),
         watches: Mutex::new(HashMap::new()),
     })
 }

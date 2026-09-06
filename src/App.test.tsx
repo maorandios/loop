@@ -43,6 +43,9 @@ function mockTauriSnapshot(localDevice: { deviceId: string; displayName: string 
     if (command === "get_autostart_state" || command === "set_autostart_enabled") {
       return { enabled: false };
     }
+    if (command === "list_resume_uploads") {
+      return [];
+    }
     return null;
   });
 }
@@ -536,14 +539,72 @@ describe("App cloud workspace flow", () => {
     expect(document.body.textContent).not.toContain("signedUrl");
   });
 
+  it("keeps already-loaded cards when a later snapshot fails", async () => {
+    mockTauriSnapshot(savedDevice);
+    const dana = {
+      id: "member-2",
+      workspaceId: "workspace-1",
+      userId: "user-2",
+      deviceId: "22222222-2222-4222-8222-222222222222",
+      displayName: "דנה",
+      joinedAt: "2026-09-02T00:00:00.000Z",
+      lastSeenAt: "2026-09-02T00:00:00.000Z",
+    };
+    const workspaceService = createMockWorkspaceService({
+      configured: true,
+      sessionUserId: "user-1",
+      workspace: readyWorkspace,
+      members: [maorMember, dana],
+    });
+    const handoffService = createMockHandoffService({
+      handoffs: [
+        {
+          id: "handoff-1",
+          workspaceId: "workspace-1",
+          senderMemberId: "member-2",
+          recipientMemberId: "member-1",
+          originalFilename: "דוח.docx",
+          status: "sent",
+          createdAt: "2026-09-02T00:00:00.000Z",
+          updatedAt: "2026-09-02T00:00:00.000Z",
+          fileSize: 2048,
+          blake3: "ab".repeat(32),
+          storagePath: "workspace/handoff/v1/object",
+          instruction: null,
+          dueOn: null,
+          versions: [],
+          returnFileSize: null,
+          returnBlake3: null,
+          returnStoragePath: null,
+          events: [],
+        },
+      ],
+    });
+
+    render(
+      <App workspaceService={workspaceService} handoffService={handoffService} />,
+    );
+    expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
+    handoffService.failNextSnapshot();
+    handoffService.notifyIncoming();
+    expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+  });
+
   it("subscribes to incoming handoffs from the app shell", () => {
     const app = readFileSync(path.join(process.cwd(), "src/App.tsx"), "utf8");
     expect(app).toContain("subscribeToIncomingHandoffs");
     expect(app).toContain("subscribeToOutgoingHandoffs");
+    expect(app).toContain("subscribeToHandoffEvents");
     expect(app).toContain("subscribeToWorkspaceMembers");
+    expect(app).toContain("createHandoffSyncController");
+    expect(app).toContain("notifyEvent");
+    expect(app).toContain("sync.start()");
+    expect(app).toContain("markUnsubscribed");
+    expect(app).toContain("syncRef.current?.retry()");
   });
 
-  it("uses createHandoffWithContext, clears selection after create, and never marks return received", async () => {
+  it("uses createHandoffV2, clears selection after send, and never marks return received", async () => {
     const dana = {
       id: "member-2",
       workspaceId: "workspace-1",
@@ -576,7 +637,10 @@ describe("App cloud workspace flow", () => {
         cancelled.push(String((payload as { selectionId: string }).selectionId));
         return null;
       }
-      if (command === "tus_upload_v1") {
+      if (command === "list_resume_uploads") {
+        return [];
+      }
+      if (command === "tus_upload_initial_v2") {
         throw new CloudError("send_failed");
       }
       return null;
@@ -601,27 +665,30 @@ describe("App cloud workspace flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: he.send }));
     await waitFor(() => {
-      expect(handoffService.createWithContextCalls).toBe(1);
+      expect(handoffService.createV2Calls).toBe(1);
     });
     expect(handoffService.createHandoffCalls).toBe(0);
-    expect(handoffService.lastCreatedWithContext).toEqual({
+    expect(handoffService.lastCreatedV2).toEqual({
       recipientMemberId: "member-2",
       originalFilename: "דוח.docx",
+      requestedAction: "approval",
       instruction: "נא לבדוק",
       dueOn: null,
+      clientRequestId: handoffService.lastCreatedV2?.clientRequestId,
     });
+    expect(handoffService.failV2InitialCalls).toEqual([]);
+    expect(handoffService.failHandoffCalls).toEqual([]);
     await waitFor(() => {
       expect(cancelled).toContain("sel-1");
     });
-    expect(handoffService.failHandoffCalls).toEqual(["handoff-1"]);
     expect(handoffService.markReturnReceivedCalls).toEqual([]);
     const app = readFileSync(path.join(process.cwd(), "src/App.tsx"), "utf8");
-    expect(app).toContain("createHandoffWithContext");
+    expect(app).toContain("sendHandoffV2");
     expect(app).not.toContain("createHandoff(");
     expect(app).not.toContain("markReturnReceived");
   });
 
-  it("keeps the selection when createHandoffWithContext fails", async () => {
+  it("keeps the selection when createHandoffV2 fails", async () => {
     const dana = {
       id: "member-2",
       workspaceId: "workspace-1",
@@ -641,6 +708,9 @@ describe("App cloud workspace flow", () => {
       }
       if (command === "get_autostart_state") {
         return { enabled: false };
+      }
+      if (command === "list_resume_uploads") {
+        return [];
       }
       if (command === "pick_send_file") {
         return {
@@ -677,7 +747,7 @@ describe("App cloud workspace flow", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: he.send }));
     await waitFor(() => {
-      expect(handoffService.createWithContextCalls).toBe(1);
+      expect(handoffService.createV2Calls).toBe(1);
     });
     expect(cancelled).toEqual([]);
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
@@ -704,6 +774,9 @@ describe("App cloud workspace flow", () => {
       }
       if (command === "get_autostart_state") {
         return { enabled: false };
+      }
+      if (command === "list_resume_uploads") {
+        return [];
       }
       if (command === "pick_send_file") {
         pickCount += 1;

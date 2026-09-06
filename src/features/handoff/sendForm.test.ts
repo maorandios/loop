@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   INSTRUCTION_MAX,
   REVISION_NOTE_MAX,
+  validateFileRequestForm,
   validateRevisionNote,
   validateSendForm,
 } from "./sendForm";
@@ -52,5 +53,20 @@ describe("send form validation", () => {
       "revision_note_too_long",
     );
     expect(validateRevisionNote("חסר חתימה")).toBeNull();
+  });
+
+  it("allows a file request without a file", () => {
+    expect(
+      validateFileRequestForm({
+        recipientMemberId: "member-2",
+        instruction: "נא לצרף את הדוח",
+      }),
+    ).toBeNull();
+    expect(
+      validateFileRequestForm({
+        recipientMemberId: "member-2",
+        instruction: "   ",
+      }),
+    ).toBe("instruction_required");
   });
 });

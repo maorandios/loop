@@ -40,6 +40,7 @@ pub fn resolve_data_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, Stri
 pub fn ensure_data_layout(root: &Path) -> Result<(), String> {
     std::fs::create_dir_all(root).map_err(|err| err.to_string())?;
     std::fs::create_dir_all(root.join("state")).map_err(|err| err.to_string())?;
+    std::fs::create_dir_all(resume_dir(root)).map_err(|err| err.to_string())?;
     std::fs::create_dir_all(root.join("files").join("inbox")).map_err(|err| err.to_string())?;
     std::fs::create_dir_all(tmp_dir(root)).map_err(|err| err.to_string())?;
     Ok(())
@@ -51,6 +52,19 @@ pub fn state_file_path(root: &Path) -> PathBuf {
 
 pub fn inbox_state_file_path(root: &Path) -> PathBuf {
     root.join("state").join("inbox.json")
+}
+
+pub fn resume_dir(root: &Path) -> PathBuf {
+    root.join("state").join("resume")
+}
+
+pub fn resume_file_path(
+    root: &Path,
+    handoff_id: uuid::Uuid,
+    version_number: u16,
+    object_id: uuid::Uuid,
+) -> PathBuf {
+    resume_dir(root).join(format!("{handoff_id}-{version_number}-{object_id}.json"))
 }
 
 pub fn inbox_dir(root: &Path) -> PathBuf {
@@ -98,8 +112,8 @@ pub fn inbox_version_dir(root: &Path, handoff_id: &str, version: &str) -> Result
     Ok(inbox_dir(root).join(handoff_id).join(version))
 }
 
-pub fn is_return_snapshot_filename(name: &str) -> bool {
-    let Some(stem) = name.strip_prefix("return-") else {
+fn is_uuid_pair_part(name: &str, prefix: &str) -> bool {
+    let Some(stem) = name.strip_prefix(prefix) else {
         return false;
     };
     let Some(stem) = stem.strip_suffix(".part") else {
@@ -110,6 +124,14 @@ pub fn is_return_snapshot_filename(name: &str) -> bool {
         return false;
     }
     uuid::Uuid::parse_str(&stem[..36]).is_ok() && uuid::Uuid::parse_str(&stem[37..]).is_ok()
+}
+
+pub fn is_return_snapshot_filename(name: &str) -> bool {
+    is_uuid_pair_part(name, "return-")
+}
+
+pub fn is_result_snapshot_filename(name: &str) -> bool {
+    is_uuid_pair_part(name, "result-")
 }
 
 #[cfg(test)]
@@ -225,6 +247,15 @@ mod tests {
         assert!(inbox_version_dir(&root, handoff, "v01").is_err());
         assert!(inbox_version_dir(&root, handoff, "v1001").is_err());
         assert_eq!(tmp_dir(&root), root.join("files").join("tmp"));
+        assert_eq!(resume_dir(&root), root.join("state").join("resume"));
+        let handoff = uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let object = uuid::Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        assert_eq!(
+            resume_file_path(&root, handoff, 1, object),
+            root.join("state")
+                .join("resume")
+                .join(format!("{handoff}-1-{object}.json"))
+        );
     }
 
     #[test]
@@ -252,5 +283,11 @@ mod tests {
         assert!(!is_return_snapshot_filename("inbox-file.docx"));
         assert!(!is_return_snapshot_filename(&format!("{handoff}.part")));
         assert!(!is_return_snapshot_filename("return-not-a-uuid.part"));
+        assert!(is_result_snapshot_filename(&format!(
+            "result-{handoff}-{snap}.part"
+        )));
+        assert!(!is_result_snapshot_filename(&format!(
+            "return-{handoff}-{snap}.part"
+        )));
     }
 }

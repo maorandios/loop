@@ -128,8 +128,14 @@ export function createReconciliationRegistry(
       if (worker.stopped) {
         return;
       }
+      const unchanged =
+        worker.desiredStatus === event.desiredStatus &&
+        worker.generation === event.generation;
       worker.desiredStatus = event.desiredStatus;
       worker.generation = event.generation;
+      if (unchanged && !worker.busy) {
+        return;
+      }
       kick(worker);
     },
     retryAll() {
@@ -180,8 +186,7 @@ export function canReturnFile(input: {
   return (
     input.contentDiffersFromV1 &&
     input.cloudStatus === "modified" &&
-    !input.pendingStatusSync &&
-    !input.reconciling
+    !input.pendingStatusSync
   );
 }
 

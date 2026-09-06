@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::paths::{inbox_state_file_path, version_folder_name};
 
-pub const INBOX_SCHEMA_VERSION: u32 = 2;
+pub const INBOX_SCHEMA_VERSION: u32 = 3;
 const DOWNLOAD_FAILED: &str = "download_failed";
 const UNSUPPORTED_INBOX_SCHEMA: &str = "unsupported_inbox_schema";
 
@@ -138,27 +138,73 @@ impl InboxFile {
             self.returns.clear();
             return false;
         }
-        let entries = std::mem::take(&mut self.entries);
-        let returns = std::mem::take(&mut self.returns);
-        for (id, mut record) in entries {
-            record.version = "v1".to_string();
-            self.upsert_version(&id, 1, InboxRole::Recipient, record);
+        let mut changed = false;
+        if self.schema_version < 2 {
+            let entries = std::mem::take(&mut self.entries);
+            let returns = std::mem::take(&mut self.returns);
+            for (id, mut record) in entries {
+                record.version = "v1".to_string();
+                self.upsert_version(&id, 1, InboxRole::Recipient, record);
+            }
+            for (id, mut record) in returns {
+                record.version = "v2".to_string();
+                let role = if self
+                    .handoffs
+                    .get(&id)
+                    .is_some_and(|handoff| handoff.role == InboxRole::Recipient)
+                {
+                    InboxRole::Recipient
+                } else {
+                    InboxRole::Sender
+                };
+                self.upsert_version(&id, 2, role, record);
+            }
+            self.schema_version = 2;
+            changed = true;
         }
-        for (id, mut record) in returns {
-            record.version = "v2".to_string();
-            let role = if self
-                .handoffs
-                .get(&id)
-                .is_some_and(|handoff| handoff.role == InboxRole::Recipient)
-            {
-                InboxRole::Recipient
-            } else {
-                InboxRole::Sender
-            };
-            self.upsert_version(&id, 2, role, record);
+        if self.schema_version == 2 && INBOX_SCHEMA_VERSION >= 3 {
+            self.entries.clear();
+            self.returns.clear();
+            self.schema_version = 3;
+            changed = true;
         }
-        self.schema_version = INBOX_SCHEMA_VERSION;
-        true
+        changed
+    }
+
+    pub fn fill_missing_filenames_from_local(&mut self, root: &Path) -> bool {
+        let mut changed = false;
+        for (handoff_id, handoff) in self.handoffs.iter_mut() {
+            for (version, record) in handoff.versions.iter_mut() {
+                if !record.filename.trim().is_empty() {
+                    continue;
+                }
+                let Ok(label) = version_folder_name(*version) else {
+                    continue;
+                };
+                let Ok(dir) = crate::paths::inbox_version_dir(root, handoff_id, &label) else {
+                    continue;
+                };
+                let Ok(entries) = std::fs::read_dir(&dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    if name.ends_with(".part") || name.ends_with(".tmp") {
+                        continue;
+                    }
+                    record.filename = name.to_string();
+                    changed = true;
+                    break;
+                }
+            }
+        }
+        changed
     }
 
     pub fn upsert_version(
@@ -329,13 +375,14 @@ pub fn load_inbox(root: &Path) -> Result<InboxFile, String> {
         Ok(bytes) => (parse_inbox_bytes(&bytes)?, Some(bytes)),
     };
     let migrated = inbox.migrate_if_needed();
+    let filled = inbox.fill_missing_filenames_from_local(root);
     let needs_canonical_key = source_bytes
         .as_deref()
         .is_some_and(|bytes| !has_canonical_schema_key(bytes));
     if inbox.schema_version > INBOX_SCHEMA_VERSION {
         return Err(UNSUPPORTED_INBOX_SCHEMA.to_string());
     }
-    if (migrated || needs_canonical_key) && path.exists() {
+    if (migrated || filled || needs_canonical_key) && path.exists() {
         save_inbox(root, &inbox)?;
     } else if inbox.schema_version < INBOX_SCHEMA_VERSION {
         inbox.schema_version = INBOX_SCHEMA_VERSION;
@@ -656,7 +703,7 @@ mod tests {
             inbox.role("22222222-2222-4222-8222-222222222222"),
             Some(InboxRole::Sender)
         );
-        assert_eq!(inbox.schema_version, 2);
+        assert_eq!(inbox.schema_version, 3);
         assert!(!inbox.migrate_if_needed());
         assert_eq!(inbox.highest_version("11111111-1111-4111-8111-111111111111"), Some(1));
         assert_eq!(inbox.highest_version("22222222-2222-4222-8222-222222222222"), Some(2));
@@ -681,14 +728,14 @@ mod tests {
         .unwrap();
         let first = load_inbox(&root).unwrap();
         let second = load_inbox(&root).unwrap();
-        assert_eq!(first.schema_version, 2);
-        assert_eq!(second.schema_version, 2);
+        assert_eq!(first.schema_version, 3);
+        assert_eq!(second.schema_version, 3);
         assert_eq!(
             serde_json::to_string(&first.handoffs).unwrap(),
             serde_json::to_string(&second.handoffs).unwrap()
         );
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("\"schema_version\": 2"));
+        assert!(saved.contains("\"schema_version\": 3"));
         assert!(!saved.contains("schemaVersion"));
         assert!(!saved.contains("\"entries\""));
         assert!(!saved.contains("\"returns\""));
@@ -702,7 +749,7 @@ mod tests {
     fn written_json_uses_snake_case_schema_version() {
         let root = temp_root("canon-key");
         let mut inbox = InboxFile::default();
-        inbox.schema_version = 2;
+        inbox.schema_version = 3;
         inbox.upsert_version(
             "11111111-1111-4111-8111-111111111111",
             1,
@@ -711,13 +758,13 @@ mod tests {
         );
         save_inbox(&root, &inbox).unwrap();
         let saved = std::fs::read_to_string(inbox_state_file_path(&root)).unwrap();
-        assert!(saved.contains("\"schema_version\": 2"));
+        assert!(saved.contains("\"schema_version\": 3"));
         assert!(!saved.contains("schemaVersion"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn legacy_file_without_schema_field_migrates_to_2() {
+    fn legacy_file_without_schema_field_migrates_to_3() {
         let root = temp_root("legacy-missing");
         let path = inbox_state_file_path(&root);
         std::fs::write(
@@ -734,18 +781,18 @@ mod tests {
         )
         .unwrap();
         let loaded = load_inbox(&root).unwrap();
-        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.schema_version, 3);
         assert!(loaded
             .version_record("11111111-1111-4111-8111-111111111111", 1)
             .is_some());
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("\"schema_version\": 2"));
+        assert!(saved.contains("\"schema_version\": 3"));
         assert!(!saved.contains("schemaVersion"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn schema_version_1_migrates_to_2() {
+    fn schema_version_1_migrates_to_3() {
         let root = temp_root("schema-1");
         let path = inbox_state_file_path(&root);
         std::fs::write(
@@ -763,7 +810,7 @@ mod tests {
         )
         .unwrap();
         let loaded = load_inbox(&root).unwrap();
-        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.schema_version, 3);
         assert_eq!(
             loaded
                 .version_record("11111111-1111-4111-8111-111111111111", 1)
@@ -772,7 +819,7 @@ mod tests {
             "a.txt"
         );
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("\"schema_version\": 2"));
+        assert!(saved.contains("\"schema_version\": 3"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -801,7 +848,7 @@ mod tests {
         )
         .unwrap();
         let loaded = load_inbox(&root).unwrap();
-        assert_eq!(loaded.schema_version, 2);
+        assert_eq!(loaded.schema_version, 3);
         assert_eq!(
             loaded
                 .version_record("11111111-1111-4111-8111-111111111111", 1)
@@ -810,7 +857,7 @@ mod tests {
             "a.txt"
         );
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert!(saved.contains("\"schema_version\": 2"));
+        assert!(saved.contains("\"schema_version\": 3"));
         assert!(!saved.contains("schemaVersion"));
         let after_rewrite = std::fs::read(&path).unwrap();
         let _ = load_inbox(&root).unwrap();
@@ -823,7 +870,7 @@ mod tests {
         let root = temp_root("future");
         let path = inbox_state_file_path(&root);
         let inbox_json = r#"{
-          "schema_version": 3,
+          "schema_version": 4,
           "handoffs": {
             "future-only": {
               "role": "recipient",
@@ -837,7 +884,7 @@ mod tests {
             }
           }
         }"#;
-        let tmp_json = r#"{"schema_version":3,"note":"leave-tmp"}"#;
+        let tmp_json = r#"{"schema_version":4,"note":"leave-tmp"}"#;
         std::fs::write(&path, inbox_json).unwrap();
         let tmp = inbox_tmp_path(&path);
         std::fs::write(&tmp, tmp_json).unwrap();
@@ -899,7 +946,7 @@ mod tests {
         std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
         std::fs::write(&keep, b"bytes").unwrap();
         let mut recovered = InboxFile::default();
-        recovered.schema_version = 2;
+        recovered.schema_version = 3;
         recovered.upsert_version(
             "11111111-1111-4111-8111-111111111111",
             1,
@@ -951,5 +998,83 @@ mod tests {
         assert_eq!(inbox.highest_version("h1"), Some(3));
         assert_eq!(inbox.working_record("h1").unwrap().filename, "later.txt");
         assert_ne!(inbox.highest_version("h1"), Some(2));
+    }
+
+    #[test]
+    fn schema_v2_to_v3_keeps_local_filenames_and_files() {
+        let root = temp_root("v2-v3");
+        let path = inbox_state_file_path(&root);
+        let handoff = "11111111-1111-4111-8111-111111111111";
+        let keep = inbox_dir(&root).join(handoff).join("v1").join("local-name.txt");
+        std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+        std::fs::write(&keep, b"keep-bytes").unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": 2,
+              "handoffs": {
+                "11111111-1111-4111-8111-111111111111": {
+                  "role": "recipient",
+                  "versions": {
+                    "1": {
+                      "filename": "local-name.txt",
+                      "size": 10,
+                      "blake3": "cc",
+                      "version": "v1"
+                    }
+                  }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let first = load_inbox(&root).unwrap();
+        assert_eq!(first.schema_version, 3);
+        assert_eq!(
+            first.version_record(handoff, 1).unwrap().filename,
+            "local-name.txt"
+        );
+        assert_eq!(std::fs::read(&keep).unwrap(), b"keep-bytes");
+        let after = std::fs::read(&path).unwrap();
+        let _ = load_inbox(&root).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), after);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn missing_version_filename_comes_from_local_file_not_storage_path() {
+        let root = temp_root("fill-name");
+        let path = inbox_state_file_path(&root);
+        let handoff = "11111111-1111-4111-8111-111111111111";
+        let keep = inbox_dir(&root).join(handoff).join("v2").join("from-disk.docx");
+        std::fs::create_dir_all(keep.parent().unwrap()).unwrap();
+        std::fs::write(&keep, b"docx").unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+              "schema_version": 2,
+              "handoffs": {
+                "11111111-1111-4111-8111-111111111111": {
+                  "role": "recipient",
+                  "versions": {
+                    "2": {
+                      "filename": "",
+                      "size": 4,
+                      "blake3": "dd",
+                      "version": "v2"
+                    }
+                  }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let loaded = load_inbox(&root).unwrap();
+        assert_eq!(
+            loaded.version_record(handoff, 2).unwrap().filename,
+            "from-disk.docx"
+        );
+        assert_eq!(std::fs::read(&keep).unwrap(), b"docx");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
