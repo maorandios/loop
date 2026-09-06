@@ -5,6 +5,14 @@ import type { HandoffRecord } from "../handoff/types";
 import { MEMBER, v2OpenMissingPointer, v2RootActive } from "../handoff/view.fixtures";
 import { WorkspaceReadyScreen } from "./WorkspaceReadyScreen";
 
+function openSettings() {
+  fireEvent.click(screen.getByRole("button", { name: he.settings }));
+}
+
+function openCompose() {
+  fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
+}
+
 const workspace = {
   id: "workspace-1",
   name: "הצוות של מאור",
@@ -70,10 +78,11 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    expect(screen.getByText("הצוות של מאור")).toBeInTheDocument();
+    expect(screen.queryByText("הצוות של מאור")).not.toBeInTheDocument();
+    expect(screen.getByText(he.waitingForMembers)).toBeInTheDocument();
+    openSettings();
     expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
     expect(screen.getByText(new RegExp(he.thisComputer))).toBeInTheDocument();
-    expect(screen.getByText(he.waitingForMembers)).toBeInTheDocument();
     expect(screen.getByText("AB12-CD34")).toHaveAttribute("dir", "ltr");
     expect(document.body.textContent).not.toContain("invalid_join_code");
     expect(document.body.textContent).not.toContain("JWT");
@@ -93,6 +102,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    openSettings();
     expect(screen.getByRole("button", { name: he.createNewJoinCode })).toBeInTheDocument();
   });
 
@@ -109,10 +119,13 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    openSettings();
     expect(
       screen.queryByRole("button", { name: he.createNewJoinCode }),
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.copyJoinCode })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.back }));
+    openCompose();
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
     expect(screen.getByText(he.noWaitingForMe)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("C:\\\\");
@@ -135,7 +148,7 @@ describe("WorkspaceReadyScreen", () => {
 
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openFolder })).not.toBeInTheDocument();
     expect(screen.getByText(/גרסה 1/)).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/sent|handoff-1|storagePath/);
@@ -161,8 +174,9 @@ describe("WorkspaceReadyScreen", () => {
       "true",
     );
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.approveAndComplete })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.acceptAndClose })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
+    expect(screen.getByRole("menuitem", { name: he.requestRevision })).toBeInTheDocument();
   });
 
   it("does not show failed handoffs in the done view", () => {
@@ -199,13 +213,14 @@ describe("WorkspaceReadyScreen", () => {
         onPickFile={() => undefined}
       />,
     );
-    expect(screen.getAllByText(he.sendForHandling).length).toBeGreaterThan(0);
+    openCompose();
+    expect(screen.getAllByText(he.sendFile).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByLabelText(he.requestFile));
     expect(screen.queryByRole("button", { name: he.chooseFile })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(he.fileDescriptionLabel), {
       target: { value: "נא לצרף את הדוח החתום" },
     });
-    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendRequest }));
     expect(onSubmitFileRequest).toHaveBeenCalledWith({
       recipientMemberId: "member-2",
       instruction: "נא לצרף את הדוח החתום",
@@ -228,6 +243,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    openCompose();
     fireEvent.click(screen.getByRole("button", { name: he.send }));
     expect(onSubmitSend).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(he.fileRequired);
@@ -247,7 +263,8 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: he.requestRevision }));
+    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
+    fireEvent.click(screen.getByRole("menuitem", { name: he.requestRevision }));
     fireEvent.click(screen.getByRole("button", { name: he.confirmRevision }));
     expect(onRequestRevision).not.toHaveBeenCalled();
     expect(screen.getByRole("alert")).toHaveTextContent(he.cloudError.revision_note_required);
@@ -307,7 +324,7 @@ describe("WorkspaceReadyScreen", () => {
 
     expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
-    expect(screen.getByText(he.handoffStatus.modified)).toBeInTheDocument();
+    expect(screen.getByText(he.needUpdate)).toBeInTheDocument();
 
     rerender(
       <WorkspaceReadyScreen
@@ -375,6 +392,7 @@ describe("WorkspaceReadyScreen", () => {
     );
 
     fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByText("דוח.docx"));
     fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
     expect(screen.getByText(he.historySent)).toBeInTheDocument();
     expect(screen.getAllByText("נא לבדוק").length).toBeGreaterThan(0);
@@ -415,10 +433,11 @@ describe("WorkspaceReadyScreen", () => {
       "true",
     );
     expect(screen.getByText("v2-active.docx")).toBeInTheDocument();
-    expect(screen.getByText(he.actionApproval)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    expect(screen.getByText(he.needApprove)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
+    expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.approveAndComplete })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(
       /mine|watching|flow_version|active_transfer|preparing|hop-active|handoff_view_inconsistent/,
@@ -471,7 +490,7 @@ describe("WorkspaceReadyScreen", () => {
     );
 
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
     expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
   });
 });

@@ -35,20 +35,18 @@ export function WorkspaceSetupScreen({
   }
 
   return (
-    <main className="flex min-h-dvh flex-col justify-center bg-zinc-50 px-6 py-8 text-zinc-900">
-      <div className="mx-auto flex w-full max-w-sm flex-col gap-5">
-        <div className="flex flex-col gap-2">
-          <p className="text-sm font-medium text-zinc-500">{he.brand}</p>
-          <h1 className="text-2xl font-semibold leading-snug">
-            {he.workspaceHowToStart}
-          </h1>
+    <main className="fr-center">
+      <div className="fr-center-inner">
+        <div>
+          <p className="fr-brand-name">{he.brand}</p>
+          <h1 className="fr-sheet-title">{he.workspaceHowToStart}</h1>
         </div>
 
         <button
           type="button"
           disabled={busy}
           onClick={() => void onCreateWorkspace()}
-          className="rounded-lg bg-sky-700 px-4 py-2.5 text-base font-medium text-white hover:bg-sky-800 disabled:opacity-60"
+          className="fr-btn fr-btn-primary"
         >
           {creating ? he.creatingWorkspace : he.createWorkspace}
         </button>
@@ -57,15 +55,15 @@ export function WorkspaceSetupScreen({
           type="button"
           disabled={busy}
           onClick={() => setShowJoin(true)}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-2.5 text-base font-medium text-zinc-900 hover:bg-zinc-100 disabled:opacity-60"
+          className="fr-btn fr-btn-secondary"
         >
           {he.joinWorkspace}
         </button>
 
         {showJoin ? (
           <form onSubmit={onJoinSubmit} className="flex flex-col gap-3">
-            <label className="flex flex-col gap-2">
-              <span className="text-sm font-medium">{he.joinCodeLabel}</span>
+            <label className="fr-field-wrap">
+              <span className="fr-label">{he.joinCodeLabel}</span>
               <input
                 dir="ltr"
                 value={joinCode}
@@ -75,26 +73,21 @@ export function WorkspaceSetupScreen({
                     setLocalError(null);
                   }
                 }}
-                placeholder={he.joinCodePlaceholder}
-                className="rounded-lg border border-zinc-300 bg-white px-3 py-2.5 text-start text-base outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-200"
+                className="fr-field"
                 style={{ unicodeBidi: "isolate" }}
                 autoComplete="off"
                 disabled={busy}
                 autoFocus
               />
             </label>
-            <button
-              type="submit"
-              disabled={busy}
-              className="rounded-lg bg-sky-700 px-4 py-2.5 text-base font-medium text-white hover:bg-sky-800 disabled:opacity-60"
-            >
+            <button type="submit" disabled={busy} className="fr-btn fr-btn-primary">
               {joining ? he.joiningWorkspace : he.joinWorkspace}
             </button>
           </form>
         ) : null}
 
         {shownError ? (
-          <p role="alert" className="text-sm text-red-700">
+          <p role="alert" className="fr-field-error">
             {shownError}
           </p>
         ) : null}

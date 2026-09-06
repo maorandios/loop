@@ -186,7 +186,7 @@ describe("App cloud workspace flow", () => {
 
     fireEvent.click(screen.getByRole("button", { name: he.tryAgain }));
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
     expect(anonymousSignInCount.value).toBe(0);
   });
@@ -206,8 +206,9 @@ describe("App cloud workspace flow", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
     expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
     expect(screen.getByText(new RegExp(he.thisComputer))).toBeInTheDocument();
     expect(
@@ -226,15 +227,15 @@ describe("App cloud workspace flow", () => {
 
     const first = render(<App workspaceService={service} />);
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
     first.unmount();
 
     render(<App workspaceService={service} />);
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
-    expect(screen.getByText("הצוות של מאור")).toBeInTheDocument();
+    expect(screen.queryByText("הצוות של מאור")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: he.workspaceHowToStart }),
     ).not.toBeInTheDocument();
@@ -256,9 +257,10 @@ describe("App cloud workspace flow", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: he.createWorkspace }));
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
-    expect(screen.getByText("הצוות של מאור")).toBeInTheDocument();
+    expect(screen.queryByText("הצוות של מאור")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
     expect(screen.getByText("AB12-CD34")).toHaveAttribute("dir", "ltr");
     expect(screen.getByRole("button", { name: he.copyJoinCode })).toBeInTheDocument();
   });
@@ -286,8 +288,9 @@ describe("App cloud workspace flow", () => {
     fireEvent.click(screen.getAllByRole("button", { name: he.joinWorkspace })[1]!);
 
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
     expect(screen.getAllByText("דנה").length).toBeGreaterThan(0);
     expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
   });
@@ -342,8 +345,10 @@ describe("App cloud workspace flow", () => {
       },
     ]);
 
-    expect((await screen.findAllByText("דנה")).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("button", { name: he.newRequest })).toBeInTheDocument();
     expect(screen.queryByText(he.waitingForMembers)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
+    expect(screen.getAllByText("דנה").length).toBeGreaterThan(0);
   });
 
   it("removes the Realtime subscription on cleanup", async () => {
@@ -359,7 +364,7 @@ describe("App cloud workspace flow", () => {
 
     const view = render(<App workspaceService={service} />);
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
     view.unmount();
     expect(unsubscribeCount.value).toBeGreaterThan(0);
@@ -396,6 +401,7 @@ describe("App cloud workspace flow", () => {
       />,
     );
 
+    fireEvent.click(await screen.findByRole("button", { name: he.settings }));
     expect(
       await screen.findByRole("button", { name: he.createNewJoinCode }),
     ).toBeInTheDocument();
@@ -428,8 +434,9 @@ describe("App cloud workspace flow", () => {
     );
 
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
     expect(
       screen.queryByRole("button", { name: he.createNewJoinCode }),
     ).not.toBeInTheDocument();
@@ -475,7 +482,7 @@ describe("App cloud workspace flow", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: he.createWorkspace }));
     expect(
-      await screen.findByRole("heading", { name: he.workspaceReadyTitle }),
+      await screen.findByRole("heading", { name: he.appName }),
     ).toBeInTheDocument();
     const text = document.body.textContent ?? "";
     expect(text).not.toContain("access_token");
@@ -508,6 +515,7 @@ describe("App cloud workspace flow", () => {
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
     expect(await screen.findByText(he.noWaitingForMe)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
 
     handoffService.emitIncoming([
@@ -534,7 +542,7 @@ describe("App cloud workspace flow", () => {
     ]);
 
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("storagePath");
     expect(document.body.textContent).not.toContain("signedUrl");
   });
@@ -588,7 +596,7 @@ describe("App cloud workspace flow", () => {
     handoffService.failNextSnapshot();
     handoffService.notifyIncoming();
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
   });
 
   it("subscribes to incoming handoffs from the app shell", () => {
@@ -657,7 +665,8 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
-    expect(await screen.findByRole("button", { name: he.send })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(he.instructionLabel), {
@@ -740,7 +749,8 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: he.chooseFile }));
+    fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(he.instructionLabel), {
       target: { value: "נא לבדוק" },
@@ -804,7 +814,8 @@ describe("App cloud workspace flow", () => {
         handoffService={createMockHandoffService()}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: he.chooseFile }));
+    fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("ישן.docx")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("חדש.docx")).toBeInTheDocument();
@@ -879,7 +890,7 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
-    fireEvent.click(await screen.findByRole("button", { name: he.approveAndComplete }));
+    fireEvent.click(await screen.findByRole("button", { name: he.acceptAndClose }));
     await waitFor(() => {
       expect(handoffService.completeCalls).toEqual(["handoff-1"]);
     });

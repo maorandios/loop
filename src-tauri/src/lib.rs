@@ -3,6 +3,7 @@ mod autostart;
 mod copy;
 mod identity;
 mod inbox;
+mod panel;
 mod paths;
 mod resume;
 mod state;
@@ -19,14 +20,15 @@ use tauri::{
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_skip_taskbar(false);
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        panel::show(&window);
     }
 }
 
 fn hide_main_window(window: &tauri::Window) {
+    if let Some(webview) = panel::webview(window) {
+        panel::hide(&webview);
+        return;
+    }
     let _ = window.hide();
     let _ = window.set_skip_taskbar(true);
 }
@@ -168,6 +170,13 @@ pub fn run() {
                     if window.label() == "main" {
                         api.prevent_close();
                         hide_main_window(window);
+                    }
+                }
+                WindowEvent::Moved(_) => {
+                    if window.label() == "main" {
+                        if let Some(webview) = panel::webview(window) {
+                            panel::snap(&webview);
+                        }
                     }
                 }
                 WindowEvent::Focused(true) => {

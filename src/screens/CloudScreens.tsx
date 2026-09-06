@@ -2,13 +2,11 @@ import { he } from "../copy/he";
 
 export function CloudNotConfiguredScreen() {
   return (
-    <main className="flex min-h-dvh flex-col justify-center bg-zinc-50 px-6 py-8 text-zinc-900">
-      <div className="mx-auto flex max-w-sm flex-col gap-3">
-        <p className="text-sm font-medium text-zinc-500">{he.brand}</p>
-        <h1 className="text-2xl font-semibold leading-snug">
-          {he.cloudNotConfiguredTitle}
-        </h1>
-        <p className="text-base text-zinc-600">{he.cloudNotConfiguredBody}</p>
+    <main className="fr-center">
+      <div className="fr-center-inner">
+        <p className="fr-brand-name">{he.brand}</p>
+        <h1 className="fr-sheet-title">{he.cloudNotConfiguredTitle}</h1>
+        <p className="fr-hint">{he.cloudNotConfiguredBody}</p>
       </div>
     </main>
   );
@@ -16,8 +14,15 @@ export function CloudNotConfiguredScreen() {
 
 export function CloudConnectingScreen() {
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-zinc-50 px-6 text-zinc-600">
-      {he.cloudConnecting}
+    <main className="fr-center">
+      <div className="fr-center-inner">
+        <div className="fr-skeleton" aria-hidden="true">
+          <div className="fr-skel" style={{ width: "40%" }} />
+          <div className="fr-skel" style={{ width: "70%" }} />
+          <div className="fr-skel" style={{ width: "55%" }} />
+        </div>
+        <p className="fr-hint">{he.cloudConnecting}</p>
+      </div>
     </main>
   );
 }
@@ -34,16 +39,12 @@ export function CloudProblemScreen({
   onRetry,
 }: CloudProblemScreenProps) {
   return (
-    <main className="flex min-h-dvh flex-col justify-center bg-zinc-50 px-6 py-8 text-zinc-900">
-      <div className="mx-auto flex max-w-sm flex-col gap-3">
-        <p className="text-sm font-medium text-zinc-500">{he.brand}</p>
-        <h1 className="text-2xl font-semibold leading-snug">{title}</h1>
-        {hint ? <p className="text-sm text-zinc-600">{hint}</p> : null}
-        <button
-          type="button"
-          onClick={onRetry}
-          className="self-start rounded-lg bg-sky-700 px-4 py-2.5 text-base font-medium text-white hover:bg-sky-800"
-        >
+    <main className="fr-center">
+      <div className="fr-center-inner">
+        <p className="fr-brand-name">{he.brand}</p>
+        <h1 className="fr-sheet-title">{title}</h1>
+        {hint ? <p className="fr-hint">{hint}</p> : null}
+        <button type="button" onClick={onRetry} className="fr-btn fr-btn-primary">
           {he.tryAgain}
         </button>
       </div>

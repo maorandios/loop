@@ -65,7 +65,17 @@ describe("tauri auth storage", () => {
       ...collectProductionSource("src"),
       ...collectProductionSource("src-tauri/src"),
     ];
-    const hits = files.filter((file) => readFileSync(file, "utf8").includes("localStorage"));
+    const themeFile = path.normalize(path.join(process.cwd(), "src/theme/theme.ts"));
+    const hits = files.filter((file) => {
+      if (path.normalize(file) === themeFile) {
+        const source = readFileSync(file, "utf8");
+        expect(source).toContain("filerelay.theme");
+        expect(source).not.toContain("access_token");
+        expect(source).not.toContain("sb-auth");
+        return false;
+      }
+      return readFileSync(file, "utf8").includes("localStorage");
+    });
     expect(hits).toEqual([]);
   });
 

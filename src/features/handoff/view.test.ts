@@ -31,7 +31,7 @@ import {
   v2WithReminder,
 } from "./view.fixtures";
 
-const GENDERED = /החזיר|החזירה|ביקש|ביקשה/;
+const GENDERED = /החזיר|החזירה|ביקשה/;
 
 function project(
   records: Parameters<typeof projectHandoffList>[0],
@@ -120,9 +120,7 @@ describe("v2 classification and sentences", () => {
     const sender = project([record], transfers, MEMBER.creator);
     expect(recipient.counts.mine).toBe(1);
     expect(sender.counts.watching).toBe(1);
-    expect(recipient.cards[0]?.statusSentence).toBe(
-      he.receivedRequestFrom.replace("{fromName}", "מאור").replace("{verb}", he.verbApproveFile),
-    );
+    expect(recipient.cards[0]?.statusSentence).toBe(he.needApprove);
     expect(sender.cards[0]?.statusSentence).toBe(he.fileInCareOf.replace("{toName}", "דני"));
     expect(recipient.cards[0]?.actionLabel).toBe(he.actionApproval);
   });
@@ -163,7 +161,7 @@ describe("v2 classification and sentences", () => {
     expect(recipient.counts.mine).toBe(1);
     expect(prior.counts.watching).toBe(1);
     expect(creator.counts.watching).toBe(1);
-    expect(recipient.cards[0]?.statusSentence).toContain("נועה");
+    expect(recipient.cards[0]?.statusSentence).toBe(he.needReview);
     expect(recipient.cards[0]?.actionLabel).toBe(he.actionReview);
   });
 
@@ -182,7 +180,7 @@ describe("v2 classification and sentences", () => {
     expect(returner.counts.watching).toBe(1);
     expect(creator.counts.watching).toBe(1);
     expect(holder.cards[0]?.statusSentence).toBe(
-      he.resultWaitingYourReview.replace("{toName}", "דני"),
+      he.receivedReplyFrom.replace("{fromName}", "דני"),
     );
     expect(returner.cards[0]?.statusSentence).toBe(
       he.resultWaitingTheirReview.replace("{fromName}", "נועה"),

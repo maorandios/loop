@@ -84,9 +84,15 @@ describe("cloud error mapping", () => {
     expect(he.joinWorkspace).toBe("הצטרף לצוות");
     expect(he.workspaceReadyTitle).toBe("הצוות מוכן");
     expect(he.waitingForMembers).toBe("ממתין לחברים נוספים");
-    expect(he.waitingForMe).toBe("לטיפולי");
-    expect(he.waitingForOthers).toBe("במעקב");
-    expect(he.done).toBe("הושלמו");
+    expect(he.waitingForMe).toBe("אינבוקס");
+    expect(he.noWaitingForMe).toBe("אין בקשות באינבוקס");
+    expect(he.waitingForMe).not.toBe("לטיפולי");
+    expect(JSON.stringify(he)).not.toMatch(/מחכה לי|מחכה לאחרים|לטיפולי/);
+    expect(he.waitingForOthers).toBe("אאוטבוקס");
+    expect(he.allRequests).toBe("הכול");
+    expect(he.requestsTitle).toBe("בקשות");
+    expect(he.requestDetails).toBe("פרטי בקשה");
+    expect(he.done).toBe("סגורות");
     expect(he.partialRequestsFailed).toBe("חלק מהבקשות לא נטענו. נסה שוב.");
     expect(he.requestCompleted).toBe("הבקשה הושלמה");
     expect(he.requestCancelled).toBe("הבקשה בוטלה");

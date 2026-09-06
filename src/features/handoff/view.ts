@@ -396,7 +396,6 @@ export function transferStatusSentence(
   }
   const fromName = names(hop.fromMemberId);
   const toName = names(hop.toMemberId);
-  const verb = actionVerbFor(hop.requestedAction);
   if (hop.requestedAction === "file_request" && hop.status === "active") {
     if (source.viewerRelation === "to") {
       return he.receivedFileRequestFrom.replace("{fromName}", fromName);
@@ -411,15 +410,25 @@ export function transferStatusSentence(
   }
   if (hop.status === "active") {
     if (source.viewerRelation === "to") {
-      return he.receivedRequestFrom
-        .replace("{fromName}", fromName)
-        .replace("{verb}", verb);
+      if (hop.requestedAction === "approval") {
+        return he.needApprove;
+      }
+      if (hop.requestedAction === "review") {
+        return he.needReview;
+      }
+      return he.needUpdate;
     }
     return he.fileInCareOf.replace("{toName}", toName);
   }
   if (hop.status === "returned_to_sender") {
     if (source.viewerRelation === "from") {
-      return he.resultWaitingYourReview.replace("{toName}", toName);
+      if (hop.resultAction === "rejected") {
+        return he.requestRejected;
+      }
+      if (hop.resultAction === "returned_with_reply") {
+        return he.receivedReplyFrom.replace("{fromName}", toName);
+      }
+      return he.returnedVersion;
     }
     if (source.viewerRelation === "to") {
       return he.resultWaitingTheirReview.replace("{fromName}", fromName);

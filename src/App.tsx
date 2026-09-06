@@ -1366,8 +1366,8 @@ export default function App({
 
   if (phase === "loading") {
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-zinc-50 text-zinc-600">
-        {he.loading}
+      <main className="fr-center">
+        <p className="fr-hint">{he.loading}</p>
       </main>
     );
   }

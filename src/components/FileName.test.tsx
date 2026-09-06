@@ -10,5 +10,6 @@ describe("FileName", () => {
     expect(value).toHaveAttribute("dir", "auto");
     expect(value).toHaveAttribute("title", "מחירון-Supplier-2026.xlsx");
     expect(value.className).toMatch(/truncate/);
+    expect(value.className).toMatch(/fr-plaintext/);
   });
 });

@@ -14,11 +14,17 @@
       {
         "label": "main",
         "title": "FileRelay",
-        "width": 420,
-        "height": 560,
+        "width": 416,
+        "backgroundColor": "#111315",
+        "height": 756,
         "resizable": false,
         "maximizable": false,
-        "center": true,
+        "minimizable": false,
+        "decorations": false,
+        "transparent": false,
+        "shadow": false,
+        "scrollBarStyle": "fluentOverlay",
+        "center": false,
         "visible": false
       }
     ],

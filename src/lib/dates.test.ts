@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { formatLocalDateTime } from "./dates";
+import { formatLocalDateTime, formatRelativeTime } from "./dates";
+import { he } from "../copy/he";
 
 describe("formatLocalDateTime", () => {
   const now = new Date(2026, 8, 2, 18, 0);
@@ -14,6 +15,13 @@ describe("formatLocalDateTime", () => {
     expect(formatLocalDateTime(new Date(2026, 8, 1, 9, 10), now)).toBe(
       "אתמול, 09:10",
     );
+  });
+
+  it("formats a relative time for recent activity", () => {
+    expect(formatRelativeTime(new Date(2026, 8, 2, 17, 56), now)).toBe(
+      he.minutesAgo.replace("{n}", "4"),
+    );
+    expect(formatRelativeTime(new Date(2026, 8, 1, 9, 10), now)).toBe(he.yesterday);
   });
 
   it("formats an older date in he-IL", () => {

@@ -8,7 +8,7 @@ export function FileName({ name, className = "" }: FileNameProps) {
     <span
       dir="auto"
       title={name}
-      className={`inline-block max-w-full truncate align-bottom text-start ${className}`.trim()}
+      className={`fr-plaintext inline-block max-w-full truncate align-bottom text-start ${className}`.trim()}
     >
       {name}
     </span>
