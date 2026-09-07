@@ -514,7 +514,7 @@ describe("App cloud workspace flow", () => {
     render(
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
-    expect(await screen.findByText(he.noWaitingForMe)).toBeInTheDocument();
+    expect(await screen.findByText(he.noFeed)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
 
@@ -541,8 +541,9 @@ describe("App cloud workspace flow", () => {
       },
     ]);
 
+    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.waitingForMe}\\s`) }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("storagePath");
     expect(document.body.textContent).not.toContain("signedUrl");
   });
@@ -592,11 +593,12 @@ describe("App cloud workspace flow", () => {
     render(
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.waitingForMe}\\s`) }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     handoffService.failNextSnapshot();
     handoffService.notifyIncoming();
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
   });
 
   it("subscribes to incoming handoffs from the app shell", () => {
@@ -890,12 +892,15 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.waitingForOthers}\\s`) }));
+    fireEvent.click(await screen.findByText("דוח.docx"));
     fireEvent.click(await screen.findByRole("button", { name: he.acceptAndClose }));
     await waitFor(() => {
       expect(handoffService.completeCalls).toEqual(["handoff-1"]);
     });
-    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByRole("button", { name: he.back }));
+    fireEvent.click(screen.getByRole("button", { name: he.filterCompleted }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByText(he.handoffStatus.completed)).toBeInTheDocument();
+    expect(screen.getAllByText(he.handoffStatus.completed).length).toBeGreaterThan(0);
   });
 });

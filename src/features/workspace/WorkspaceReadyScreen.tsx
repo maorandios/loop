@@ -9,16 +9,23 @@ import { handoffRole } from "../handoff/buckets";
 import { visibleHistory } from "../handoff/history";
 import {
   EMPTY_INBOX_FILTER,
-  inboxTabCounts,
   isInboxFilterActive,
-  visibleInboxCards,
   type InboxExtraFilter,
-  type InboxTab,
 } from "../handoff/inboxList";
+import {
+  PRIMARY_VIEWS,
+  STATUS_FILTERS,
+  primaryCounts,
+  toggleStatusFilter,
+  visibleListItems,
+  type PrimaryView,
+  type StatusFilter,
+} from "../handoff/mailbox";
 import {
   buildDesignInbox,
   mergeDesignMembers,
   shouldUseDesignCards,
+  withDesignEmails,
 } from "../handoff/designCards";
 import { canReturnFile } from "../handoff/reconciliation";
 import { projectHandoffList } from "../handoff/view";
@@ -34,9 +41,8 @@ import {
   workingFileChanged,
 } from "../handoff/actions";
 import {
-  initials,
+  counterpartHandle,
   presentHandoffCard,
-  primaryActionCopy,
   resolveCardPrimary,
 } from "../handoff/cardPresentation";
 import {
@@ -127,6 +133,11 @@ function memberName(members: WorkspaceMember[], memberId: string): string {
   return members.find((member) => member.id === memberId)?.displayName ?? "";
 }
 
+function memberEmail(members: WorkspaceMember[], memberId: string): string | null {
+  const email = members.find((member) => member.id === memberId)?.email?.trim();
+  return email || null;
+}
+
 function localFor(inbox: InboxLocalEntry[], handoffId: string): InboxLocalEntry[] {
   return inbox.filter((entry) => entry.handoffId === handoffId);
 }
@@ -199,36 +210,46 @@ function MenuItem({
   );
 }
 
-const TABS: InboxTab[] = ["mine", "watching", "done"];
+const TABS: PrimaryView[] = PRIMARY_VIEWS;
 
-function tabLabel(tab: InboxTab): string {
-  if (tab === "mine") {
+function tabLabel(tab: PrimaryView): string {
+  if (tab === "feed") {
+    return he.feed;
+  }
+  if (tab === "inbox") {
     return he.waitingForMe;
   }
-  if (tab === "watching") {
-    return he.waitingForOthers;
-  }
-  return he.done;
+  return he.waitingForOthers;
 }
 
-function tabIcon(tab: InboxTab): IconName {
-  if (tab === "mine") {
+function tabIcon(tab: PrimaryView): IconName {
+  if (tab === "feed") {
+    return "live";
+  }
+  if (tab === "inbox") {
     return "inbox";
   }
-  if (tab === "watching") {
-    return "outbox";
-  }
-  return "archive";
+  return "outbox";
 }
 
-function emptyLabel(tab: InboxTab): string {
-  if (tab === "mine") {
+function emptyLabel(tab: PrimaryView): string {
+  if (tab === "feed") {
+    return he.noFeed;
+  }
+  if (tab === "inbox") {
     return he.noWaitingForMe;
   }
-  if (tab === "watching") {
-    return he.noWaitingForOthers;
+  return he.noWaitingForOthers;
+}
+
+function statusFilterLabel(filter: StatusFilter): string {
+  if (filter === "action") {
+    return he.filterAction;
   }
-  return he.noDoneFiles;
+  if (filter === "info") {
+    return he.filterInfo;
+  }
+  return he.filterCompleted;
 }
 
 export function WorkspaceReadyScreen(props: WorkspaceReadyScreenProps) {
@@ -290,13 +311,15 @@ function WorkspaceReadyView({
   localStates = {},
   reminderNotice = null,
   actionBusyId = null,
-  connected = true,
 }: WorkspaceReadyScreenProps) {
   const designInbox = useMemo(() => {
     if (!shouldUseDesignCards() || !currentMemberId) {
       return null;
     }
-    const roster = mergeDesignMembers(workspace.id, currentMemberId, liveMembers);
+    const roster = withDesignEmails(
+      mergeDesignMembers(workspace.id, currentMemberId, liveMembers),
+      currentMemberId,
+    );
     const partner = roster.find((member) => member.id !== currentMemberId);
     if (!partner) {
       return null;
@@ -324,7 +347,8 @@ function WorkspaceReadyView({
   });
   const { pref: themePref, setPref: setThemePref } = useTheme();
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<InboxTab>("mine");
+  const [primaryView, setPrimaryView] = useState<PrimaryView>("feed");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter | null>(null);
   const [extraFilter, setExtraFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [draftFilter, setDraftFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -371,9 +395,18 @@ function WorkspaceReadyView({
       ),
     [handoffs, transfers, currentMemberId, members, v2LoadFailed],
   );
-  const tabCounts = inboxTabCounts(projected);
-  const visible = visibleInboxCards(projected, activeTab, extraFilter);
-  const detailCard = detailId ? visible.find((card) => card.id === detailId) ?? projected.cards.find((card) => card.id === detailId) ?? null : null;
+  const tabCounts = primaryCounts(projected, currentMemberId);
+  const visibleItems = visibleListItems({
+    projected,
+    primaryView,
+    statusFilter,
+    extraFilter,
+    memberId: currentMemberId,
+    localWorkOf: (handoffId) => localStates[handoffId] ?? "idle",
+  });
+  const detailCard = detailId
+    ? (projected.cards.find((card) => card.id === detailId) ?? null)
+    : null;
   const showLoadBanner = projected.inconsistent;
   const sending =
     sendProgress === "sending" || sendProgress === "uploading" || sendProgress === "finalizing";
@@ -855,46 +888,76 @@ function WorkspaceReadyView({
             <span style={{ width: 36 }} />
           </div>
         ) : (
-          <div role="tablist" className="fr-seg">
-            {TABS.map((tab) => (
-              <button
-                key={tab}
-                type="button"
-                role="tab"
-                aria-selected={activeTab === tab}
-                aria-label={`${tabLabel(tab)} ${tabCounts[tab]}`}
-                className="fr-seg-btn"
-                onClick={() => {
-                  setActiveTab(tab);
-                }}
-              >
-                <span className="fr-seg-count">{tabCounts[tab]}</span>
-                <span className="fr-seg-label">
-                  <FluentIcon name={tabIcon(tab)} size={16} />
-                  {tabLabel(tab)}
-                </span>
-              </button>
-            ))}
+          <div className="fr-nav-block">
+            <div role="tablist" className="fr-seg">
+              {TABS.map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={primaryView === tab}
+                  aria-label={`${tabLabel(tab)} ${tabCounts[tab]}`}
+                  className="fr-seg-btn"
+                  onClick={() => {
+                    setPrimaryView(tab);
+                  }}
+                >
+                  <span className="fr-seg-count">{tabCounts[tab]}</span>
+                  <span className="fr-seg-label">
+                    <FluentIcon name={tabIcon(tab)} size={16} />
+                    {tabLabel(tab)}
+                  </span>
+                </button>
+              ))}
+            </div>
+            <div
+              className="fr-status-seg"
+              role="group"
+              aria-label={he.statusFilter}
+              data-filter={statusFilter ?? "none"}
+              data-index={statusFilter ? String(STATUS_FILTERS.indexOf(statusFilter)) : ""}
+            >
+              <span className="fr-status-seg-pill" aria-hidden="true" />
+              {STATUS_FILTERS.map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  className="fr-status-seg-btn"
+                  aria-pressed={statusFilter === filter}
+                  aria-label={statusFilterLabel(filter)}
+                  onClick={() => {
+                    setStatusFilter((current) => toggleStatusFilter(current, filter));
+                  }}
+                >
+                  {statusFilterLabel(filter)}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
         <section
           ref={listScrollRef}
           className="fr-scroll"
-          key={detailCard ? "detail" : activeTab}
+          key={detailCard ? "detail" : primaryView}
         >
-          {!detailCard && visible.length === 0 ? (
+          {!detailCard && visibleItems.length === 0 ? (
             <div className="fr-empty">
               <FluentIcon name="document" />
-              <p>{emptyLabel(activeTab)}</p>
+              <p>{emptyLabel(primaryView)}</p>
             </div>
           ) : (
             (detailCard
-              ? [{ key: "detail", cards: [detailCard] }]
-              : [{ key: activeTab, cards: visible }]
+              ? [{ key: "detail", cards: [{ key: detailCard.id, card: detailCard }] }]
+              : [{ key: primaryView, cards: visibleItems }]
             ).map((group) => (
               <div key={group.key} className={detailCard ? undefined : "fr-list-swap"}>
-                {group.cards.map((card) => {
+                <div
+                  key={detailCard ? "detail" : (statusFilter ?? "all")}
+                  className={detailCard ? undefined : "fr-list-filter"}
+                >
+                {group.cards.map((item) => {
+              const card = item.card;
               const handoff = card.source.record;
               const isLegacy = card.source.kind === "legacy";
               const role = isLegacy ? handoffRole(handoff, currentMemberId) : null;
@@ -1005,7 +1068,10 @@ function WorkspaceReadyView({
                 card,
                 currentMemberId,
                 (id) => memberName(members, id),
-                { useMe: compact },
+                {
+                  useMe: compact,
+                  emailOf: (id) => memberEmail(members, id),
+                },
               );
               const primaryKind = resolveCardPrimary({
                 section: card.section,
@@ -1024,10 +1090,24 @@ function WorkspaceReadyView({
                   isLegacy && role === "sender" && handoff.status === "returned",
                 ),
               });
-              const primaryCopy = primaryKind ? primaryActionCopy(primaryKind) : null;
+              const handle = counterpartHandle(presented.counterpart);
+              const canDownloadFile = Boolean(
+                presented.subjectText && (onOpenV2 || onDownloadAndOpen || onOpenLatest),
+              );
+              const downloadCardFile = () => {
+                if (v2Source && onOpenV2) {
+                  void onOpenV2(handoff);
+                  return;
+                }
+                if (showLegacyOpenOut && onOpenLatest) {
+                  void onOpenLatest(handoff);
+                  return;
+                }
+                void onDownloadAndOpen?.(handoff);
+              };
               return (
                 <article
-                  key={handoff.id}
+                  key={item.key}
                   data-handoff-id={handoff.id}
                   className={`fr-card${compact ? " fr-card-compact" : ""}${presented.settled ? " fr-card-settled" : ""}`}
                   tabIndex={compact ? 0 : undefined}
@@ -1056,11 +1136,14 @@ function WorkspaceReadyView({
                     <span className={`fr-status fr-status-${presented.tone}`}>
                       <FluentIcon name={presented.statusIcon} size={16} />
                       {presented.statusLabel}
-                    </span>
-                    <div className="fr-card-status-end">
+                      <span className="fr-status-sep" aria-hidden="true">
+                        ·
+                      </span>
                       <span className="fr-activity-time">
                         {formatRelativeTime(new Date(card.lastActivityAt))}
                       </span>
+                    </span>
+                    <div className="fr-card-status-end">
                     <div className="fr-overflow">
                       <button
                         type="button"
@@ -1293,50 +1376,47 @@ function WorkspaceReadyView({
                     </div>
                     </div>
                   </div>
-                  <div className="fr-sentence">{presented.headline}</div>
-                  {presented.subjectText ? (
-                    <div
-                      className={`fr-file${presented.subjectKind === "fileRequest" ? " fr-file-request" : ""}`}
-                    >
-                      <FluentIcon
-                        name={presented.subjectKind === "fileRequest" ? "attach" : "document"}
-                        size={16}
-                      />
-                      {presented.subjectKind === "file" ? (
-                        <FileName name={presented.subjectText} className="fr-file-name" />
-                      ) : (
-                        <span
-                          dir="auto"
-                          title={presented.subjectText}
-                          className="fr-file-request-text fr-plaintext"
-                        >
-                          {presented.subjectText}
+                  {handle || presented.title ? (
+                    <div className="fr-sentence">
+                      {handle ? (
+                        <>
+                          <span className="fr-sentence-who">
+                            <span className="fr-sentence-at" aria-hidden="true">
+                              @
+                            </span>
+                            <span dir="auto" className="fr-sentence-user">
+                              {handle}
+                            </span>
+                          </span>
+                          {presented.title ? (
+                            <span className="fr-sentence-dot" aria-hidden="true">
+                              ·
+                            </span>
+                          ) : null}
+                        </>
+                      ) : null}
+                      {presented.title ? (
+                        <span dir="auto" className="fr-sentence-text">
+                          {presented.title}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                   ) : null}
-                  <div className="fr-people" dir="rtl">
-                    <span className="fr-initials" title={presented.people.senderName}>
-                      {initials(presented.people.senderName)}
-                    </span>
-                    <span className="fr-person-name" title={presented.people.senderName}>
-                      {presented.people.senderDisplay}
-                    </span>
-                    <span className="fr-people-to">{he.toRecipient}</span>
-                    <span className="fr-initials" title={presented.people.recipientName}>
-                      {initials(presented.people.recipientName)}
-                    </span>
-                    <span className="fr-person-name" title={presented.people.recipientName}>
-                      {presented.people.recipientDisplay}
-                    </span>
-                  </div>
-                  {presented.people.holderLine ? (
-                    <p className="fr-holder">{presented.people.holderLine}</p>
-                  ) : null}
-                  {presented.instruction ? (
-                    <p dir="auto" className={detailCard ? "fr-note" : "fr-note fr-note-clamp"}>
-                      {presented.instruction}
-                    </p>
+                  {presented.dueLabel || presented.versionLabel ? (
+                    <div className="fr-meta-row">
+                      {presented.dueLabel ? (
+                        <span>
+                          <FluentIcon name="calendar" size={14} />
+                          {presented.dueLabel}
+                        </span>
+                      ) : null}
+                      {presented.versionLabel ? (
+                        <span>
+                          <FluentIcon name="history" size={14} />
+                          {presented.versionLabel}
+                        </span>
+                      ) : null}
+                    </div>
                   ) : null}
                   {detailCard && card.relevantNote ? (
                     <p dir="auto" className="fr-note">
@@ -1367,111 +1447,8 @@ function WorkspaceReadyView({
                   ) : showSyncing ? (
                     <div className="fr-progress">{he.syncingChanges}</div>
                   ) : null}
-                  <div className={compact ? "fr-card-foot" : undefined}>
-                  {presented.dueLabel || presented.versionLabel ? (
-                    <div className="fr-meta-row">
-                      {presented.dueLabel ? (
-                        <span
-                          className={
-                            presented.dueTone === "overdue"
-                              ? "fr-due-overdue"
-                              : presented.dueTone === "soon"
-                                ? "fr-due-soon"
-                                : undefined
-                          }
-                        >
-                          <FluentIcon
-                            name={presented.dueTone === "overdue" ? "alert" : "calendar"}
-                            size={14}
-                          />
-                          {presented.dueLabel}
-                        </span>
-                      ) : null}
-                      {presented.versionLabel ? (
-                        <span>
-                          <FluentIcon name="history" size={14} />
-                          {presented.versionLabel}
-                        </span>
-                      ) : null}
-                    </div>
-                  ) : (
-                    compact ? <span /> : null
-                  )}
+                  {!compact ? (
                   <div className="fr-actions">
-                    {compact && primaryKind && primaryCopy ? (
-                      <>
-                        <button
-                          type="button"
-                          className="fr-btn fr-btn-primary"
-                          disabled={
-                            v2Busy ||
-                            returning ||
-                            downloadingId === handoff.id ||
-                            (primaryKind === "attach" && !onAttachFileRequest) ||
-                            (primaryKind === "returnFile" && !onReturnFile)
-                          }
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            if (primaryKind === "attach") {
-                              void onAttachFileRequest?.(handoff);
-                              return;
-                            }
-                            if (primaryKind === "acceptAndClose") {
-                              if (v2Source) {
-                                void onAcceptV2?.(handoff);
-                              } else {
-                                void onCompleteHandoff?.(handoff);
-                              }
-                              return;
-                            }
-                            if (primaryKind === "retry") {
-                              void onRetryLocal?.(handoff.id);
-                              return;
-                            }
-                            if (primaryKind === "openDetails") {
-                              openDetail(handoff.id, event.currentTarget.closest("article"));
-                              return;
-                            }
-                            if (primaryKind === "returnFile") {
-                              void onReturnFile?.(handoff);
-                              return;
-                            }
-                            if (primaryKind === "chooseFile") {
-                              void onRestoreSnapshot?.(handoff.id);
-                              return;
-                            }
-                            if (v2Source && onOpenV2) {
-                              void onOpenV2(handoff);
-                              return;
-                            }
-                            if (showLegacyOpenOut) {
-                              void onOpenLatest?.(handoff);
-                              return;
-                            }
-                            void onDownloadAndOpen?.(handoff);
-                          }}
-                        >
-                          <FluentIcon name={primaryCopy.icon} size={16} />
-                          {primaryKind === "returnFile"
-                            ? returnFileToLabel(sender)
-                            : primaryCopy.label}
-                        </button>
-                        {showRemind ? (
-                          <button
-                            type="button"
-                            className="fr-icon-btn"
-                            aria-label={he.sendReminder}
-                            disabled={v2Busy}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void onRemind?.(handoff);
-                            }}
-                          >
-                            <FluentIcon name="alert" size={16} />
-                          </button>
-                        ) : null}
-                      </>
-                    ) : null}
                     {!compact && showLegacyOpenIn ? (
                       <button
                         type="button"
@@ -1709,7 +1686,27 @@ function WorkspaceReadyView({
                       </>
                     ) : null}
                   </div>
-                  </div>
+                  ) : null}
+                  {presented.subjectText ? (
+                    <div className="fr-file">
+                      <FluentIcon name="document" size={14} />
+                      <FileName name={presented.subjectText} className="fr-file-name" />
+                      {canDownloadFile ? (
+                        <button
+                          type="button"
+                          className="fr-file-download"
+                          aria-label={he.downloadAndOpen}
+                          disabled={v2Busy || returning || downloadingId === handoff.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            downloadCardFile();
+                          }}
+                        >
+                          <FluentIcon name="arrowCircleDown" size={14} />
+                        </button>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {resultNoteFor === handoff.id ? (
                     <div className="fr-overlay" role="presentation">
                       <div className="fr-dialog" role="dialog" aria-modal="true">
@@ -1925,6 +1922,7 @@ function WorkspaceReadyView({
                 </article>
               );
                 })}
+                </div>
               </div>
             ))
           )}

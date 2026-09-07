@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { he } from "../../copy/he";
 import {
+  counterpartHandle,
   formatCardDue,
   presentHandoffCard,
   resolveCardPrimary,
@@ -29,10 +30,14 @@ describe("card presentation", () => {
     const view = present(record, transfers, MEMBER.recipient, true);
     expect(view.statusLabel).toBe(he.actionApproval);
     expect(view.headline).toBe(he.needApprove);
+    expect(view.title).toBe("נא לאשר");
     expect(view.tone).toBe("action");
     expect(view.people.senderName).toBe("מאור");
     expect(view.people.recipientDisplay).toBe(he.meLabel);
     expect(view.people.recipientName).toBe("דני");
+    expect(view.counterpart?.name).toBe("מאור");
+    expect(view.counterpart?.email).toBeNull();
+    expect(counterpartHandle(view.counterpart)).toBe("מאור");
     expect(view.versionLabel).toBe("גרסה 1");
     expect(view.dueLabel).toBe("עד 10 בספטמבר");
   });
@@ -42,7 +47,27 @@ describe("card presentation", () => {
     const view = present(record, transfers, MEMBER.creator);
     expect(view.statusLabel).toBe(he.statusInProgress);
     expect(view.headline).toBe(he.recipientHandling.replace("{name}", "דני"));
+    expect(view.title).toBe("נא לאשר");
+    expect(view.counterpart?.name).toBe("דני");
     expect(view.tone).toBe("watch");
+  });
+
+  it("attaches the counterpart email when the roster has one", () => {
+    const { record, transfers } = v2RootActive();
+    const projected = projectHandoffList([record], transfers, MEMBER.recipient, memberName);
+    const card = projected.cards[0];
+    if (!card) {
+      throw new Error("expected card");
+    }
+    const view = presentHandoffCard(card, MEMBER.recipient, memberName, {
+      emailOf: (id) => (id === MEMBER.creator ? "maor@drops.app" : null),
+    });
+    expect(view.counterpart).toEqual({
+      id: MEMBER.creator,
+      name: "מאור",
+      email: "maor@drops.app",
+    });
+    expect(counterpartHandle(view.counterpart)).toBe("מאור");
   });
 
   it("uses file-request description instead of a fake filename", () => {
@@ -60,8 +85,9 @@ describe("card presentation", () => {
     const view = present(fileRequest, hops, MEMBER.recipient);
     expect(view.headline).toBe(he.needAttachFile);
     expect(view.statusLabel).toBe(he.statusNeedFile);
+    expect(view.title).toBe("דוח הכספים לשנת 2021");
     expect(view.subjectKind).toBe("fileRequest");
-    expect(view.subjectText).toBe("דוח הכספים לשנת 2021");
+    expect(view.subjectText).toBeNull();
     expect(view.instruction).toBeNull();
     expect(view.versionLabel).toBeNull();
     expect(view.subjectText).not.toBe("unknown.txt");

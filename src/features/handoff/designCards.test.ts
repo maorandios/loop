@@ -57,6 +57,7 @@ describe("design inbox catalog", () => {
     const merged = mergeDesignMembers("workspace-1", ME, [me]);
     expect(merged).toHaveLength(2);
     expect(merged.some((member) => member.id !== ME)).toBe(true);
+    expect(merged.find((member) => member.id !== ME)?.email).toBe("dana@drops.app");
 
     const withLive = mergeDesignMembers("workspace-1", ME, [
       me,

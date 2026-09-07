@@ -19,6 +19,7 @@ const members = [
     userId: "user-1",
     deviceId: "11111111-1111-4111-8111-111111111111",
     displayName: "מאור",
+    email: "maor@drops.app",
     joinedAt: "2026-09-02T00:00:00.000Z",
     lastSeenAt: "2026-09-02T00:00:00.000Z",
   },
@@ -28,6 +29,7 @@ const members = [
     userId: "user-2",
     deviceId: "22222222-2222-4222-8222-222222222222",
     displayName: "דני",
+    email: "dani@drops.app",
     joinedAt: "2026-09-02T00:00:00.000Z",
     lastSeenAt: "2026-09-02T00:00:00.000Z",
   },
@@ -73,22 +75,55 @@ describe("request card UI", () => {
         onDownloadAndOpen={() => undefined}
       />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    expect(screen.getByText("נא לוודא שהסכומים תואמים לדוח הרבעוני")).toBeInTheDocument();
     expect(screen.getByText("מאור")).toBeInTheDocument();
-    expect(screen.getByText(he.toRecipient)).toBeInTheDocument();
-    expect(screen.getByText(he.meLabel)).toBeInTheDocument();
-    expect(screen.getAllByTitle("דני").length).toBeGreaterThan(0);
+    expect(screen.queryByText("maor@drops.app")).not.toBeInTheDocument();
+    expect(screen.queryByText(he.toRecipient)).not.toBeInTheDocument();
+    expect(screen.queryByText(he.meLabel)).not.toBeInTheDocument();
+    expect(screen.queryByText("dani@drops.app")).not.toBeInTheDocument();
     expect(screen.getByText("עד 10 בספטמבר")).toBeInTheDocument();
+    expect(document.querySelector(".fr-due-soon, .fr-due-overdue")).toBeFalsy();
     expect(screen.getByText("גרסה 1")).toBeInTheDocument();
     expect(screen.queryByText(he.noDueDate)).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: he.openAndHandle })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     const file = screen.getByTitle("דוח.docx");
     expect(file).toHaveAttribute("dir", "auto");
-    expect(document.querySelector(".fr-note-clamp")).toBeTruthy();
+    expect(document.querySelector(".fr-note-clamp")).toBeFalsy();
+    expect(document.querySelector(".fr-card-actor")).toBeFalsy();
+    expect(document.querySelector(".fr-sentence-at")?.textContent).toBe("@");
+    expect(document.querySelector(".fr-sentence-user")?.textContent).toBe("מאור");
+    expect(document.querySelector(".fr-sentence-text")?.textContent).toBe(
+      "נא לוודא שהסכומים תואמים לדוח הרבעוני",
+    );
+    expect(document.querySelector(".fr-status")?.textContent).not.toContain("מאור");
+    expect(document.querySelector(".fr-status .fr-activity-time")).toBeTruthy();
+    expect(document.querySelector(".fr-card-status-end .fr-activity-time")).toBeFalsy();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/active|returned_to_sender|flow_version|uuid|storagePath/i);
     expect(document.body.textContent ?? "").not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
     for (const button of document.querySelectorAll(".fr-icon-btn")) {
       expect(button).toHaveAttribute("aria-label");
     }
+  });
+
+  it("keeps overdue due dates muted", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId="member-2"
+        handoffs={[legacy({ dueOn: "2020-01-01" })]}
+        members={[
+          { ...members[0]!, id: "member-1" },
+          { ...members[1]!, id: "member-2" },
+        ]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    expect(screen.getByText(/באיחור/)).toBeInTheDocument();
+    expect(document.querySelector(".fr-due-soon, .fr-due-overdue")).toBeFalsy();
   });
 
   it("hides due and version 0, and does not invent a file-request name", () => {
@@ -117,12 +152,13 @@ describe("request card UI", () => {
         onAttachFileRequest={() => undefined}
       />,
     );
-    expect(screen.getByText(he.needAttachFile)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    expect(screen.queryByText(he.needAttachFile)).not.toBeInTheDocument();
     expect(screen.getByText("דוח הכספים לשנת 2021")).toBeInTheDocument();
     expect(screen.queryByText("unknown.txt")).not.toBeInTheDocument();
     expect(screen.queryByText(he.noDueDate)).not.toBeInTheDocument();
     expect(screen.queryByText(/גרסה 0/)).not.toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: he.attachFile })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: he.attachFile })).not.toBeInTheDocument();
   });
 
   it("keeps completed cards free of פתח לבדיקה and opens details from the card, not the button", () => {
@@ -140,10 +176,10 @@ describe("request card UI", () => {
         onOpenV2={openV2}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
     expect(screen.queryByRole("button", { name: he.openToReview })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openFile })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: he.openFile }));
+    expect(screen.queryByRole("button", { name: he.openFile })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.downloadAndOpen }));
     expect(openV2).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("v2-completed.docx"));
@@ -167,6 +203,7 @@ describe("request card UI", () => {
         onReject={() => undefined}
       />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
@@ -189,9 +226,12 @@ describe("request card UI", () => {
         onOpenV2={() => undefined}
       />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(document.querySelector(".fr-card-status")).toBeTruthy();
-    expect(document.querySelector(".fr-people")).toBeTruthy();
-    expect(document.querySelector(".fr-actions .fr-btn-primary")).toBeTruthy();
+    expect(document.querySelector(".fr-card-actor")).toBeFalsy();
+    expect(document.querySelector(".fr-sentence-at")?.textContent).toBe("@");
+    expect(document.querySelector(".fr-sentence-user")?.textContent).toBe("מאור");
+    expect(document.querySelector(".fr-actions .fr-btn-primary")).toBeFalsy();
     document.documentElement.setAttribute("data-theme", "light");
     rerender(
       <WorkspaceReadyScreen
@@ -206,8 +246,8 @@ describe("request card UI", () => {
       />,
     );
     expect(document.querySelector(".fr-card-status")).toBeTruthy();
-    expect(document.querySelector(".fr-people")).toBeTruthy();
-    expect(document.querySelectorAll(".fr-actions .fr-btn-primary")).toHaveLength(1);
+    expect(document.querySelector(".fr-card-actor")).toBeFalsy();
+    expect(document.querySelectorAll(".fr-actions .fr-btn-primary")).toHaveLength(0);
     document.documentElement.removeAttribute("data-theme");
   });
 });

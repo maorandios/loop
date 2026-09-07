@@ -64,7 +64,8 @@ describe("FileRelay Fluent UI", () => {
       he.settings,
     );
     expect(screen.getByRole("button", { name: he.newRequest })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    expect(screen.getByRole("button", { name: he.moreActions })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
@@ -119,6 +120,7 @@ describe("FileRelay Fluent UI", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     const file = screen.getByTitle("מחירון-Supplier-2026.xlsx");
     expect(file).toHaveAttribute("dir", "auto");
     expect(file.className).toMatch(/fr-plaintext|fr-file-name/);

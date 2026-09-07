@@ -127,7 +127,7 @@ describe("WorkspaceReadyScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     openCompose();
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
-    expect(screen.getByText(he.noWaitingForMe)).toBeInTheDocument();
+    expect(screen.getByText(he.noFeed)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("C:\\\\");
     expect(document.body.textContent).not.toContain("signedUrl");
   });
@@ -146,9 +146,11 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openFolder })).not.toBeInTheDocument();
     expect(screen.getByText(/גרסה 1/)).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/sent|handoff-1|storagePath/);
@@ -169,11 +171,13 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
+    expect(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("דוח.docx"));
     expect(screen.getByRole("button", { name: he.acceptAndClose })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     expect(screen.getByRole("menuitem", { name: he.requestRevision })).toBeInTheDocument();
@@ -194,7 +198,8 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 2` }));
+    fireEvent.click(screen.getByRole("button", { name: he.filterCompleted }));
     expect(screen.getByText("גמור.docx")).toBeInTheDocument();
     expect(screen.queryByText("נכשל.docx")).not.toBeInTheDocument();
   });
@@ -263,6 +268,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     fireEvent.click(screen.getByRole("menuitem", { name: he.requestRevision }));
     fireEvent.click(screen.getByRole("button", { name: he.confirmRevision }));
@@ -303,10 +309,9 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(screen.getByText(he.syncingChanges)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: returnFileToLabel("מאור") }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: returnFileToLabel("מאור") })).not.toBeInTheDocument();
 
     rerender(
       <WorkspaceReadyScreen
@@ -322,9 +327,11 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByText("נא לבדוק"));
     expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
-    expect(screen.getByText(he.needUpdate)).toBeInTheDocument();
+    expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
+    expect(screen.queryByText(he.needUpdate)).not.toBeInTheDocument();
 
     rerender(
       <WorkspaceReadyScreen
@@ -391,7 +398,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.done} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
     fireEvent.click(screen.getByText("דוח.docx"));
     fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
     expect(screen.getByText(he.historySent)).toBeInTheDocument();
@@ -428,13 +435,15 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toHaveAttribute(
       "aria-selected",
       "true",
     );
     expect(screen.getByText("v2-active.docx")).toBeInTheDocument();
-    expect(screen.getByText(he.needApprove)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    expect(screen.getByText("נא לאשר")).toBeInTheDocument();
+    expect(screen.queryByText(he.needApprove)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
@@ -465,6 +474,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    expect(screen.getByRole("tab", { name: `${he.feed} 2` })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: `${he.waitingForOthers} 0` })).toBeInTheDocument();
     expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
@@ -489,8 +499,9 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
   });
 });

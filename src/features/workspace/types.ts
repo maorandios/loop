@@ -11,6 +11,7 @@ export type WorkspaceMember = {
   userId: string;
   deviceId: string;
   displayName: string;
+  email?: string | null;
   joinedAt: string;
   lastSeenAt: string;
 };

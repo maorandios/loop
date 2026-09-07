@@ -1,5 +1,6 @@
 import type { WorkspaceMember } from "../workspace/types";
 import type {
+  HandoffEvent,
   HandoffRecord,
   HandoffVersion,
   RequestStatus,
@@ -41,9 +42,33 @@ export function designPartnerMember(
     userId: "design-partner-user",
     deviceId: "design-partner-device",
     displayName,
+    email: "dana@drops.app",
     joinedAt: "2026-09-01T00:00:00.000Z",
     lastSeenAt: "2026-09-06T12:00:00.000Z",
   };
+}
+
+export function designEmailFor(member: WorkspaceMember, meId: string): string {
+  if (member.email?.trim()) {
+    return member.email.trim();
+  }
+  if (member.id === meId) {
+    return "maor@drops.app";
+  }
+  if (member.id === DESIGN_PARTNER_ID || member.displayName === "דנה") {
+    return "dana@drops.app";
+  }
+  return "user@drops.app";
+}
+
+export function withDesignEmails(
+  members: WorkspaceMember[],
+  meId: string,
+): WorkspaceMember[] {
+  return members.map((member) => ({
+    ...member,
+    email: designEmailFor(member, meId),
+  }));
 }
 
 export function mergeDesignMembers(
@@ -92,6 +117,109 @@ function hoursAgoIso(hours: number): string {
   return new Date(Date.now() - hours * 3_600_000).toISOString();
 }
 
+function designEvents(
+  spec: CardSpec,
+  fromMemberId: string,
+  toMemberId: string,
+  createdAt: string,
+  at: string,
+): HandoffEvent[] {
+  const events: HandoffEvent[] = [
+    {
+      eventType: "created",
+      note: null,
+      versionNumber: null,
+      actorMemberId: fromMemberId,
+      createdAt,
+    },
+    {
+      eventType: "finalized",
+      note: null,
+      versionNumber: spec.withFile ? 1 : null,
+      actorMemberId: fromMemberId,
+      createdAt: hoursAgoIso(spec.hoursAgo + 4),
+    },
+  ];
+  if (spec.withFile && spec.hopStatus === "active") {
+    events.push({
+      eventType: "opened",
+      note: null,
+      versionNumber: 1,
+      actorMemberId: toMemberId,
+      createdAt: hoursAgoIso(spec.hoursAgo + 1),
+    });
+  }
+  if (spec.resultAction === "rejected") {
+    events.push({
+      eventType: "rejected",
+      note: spec.resultNote ?? null,
+      versionNumber: null,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  } else if (spec.resultAction === "returned_with_file") {
+    events.push({
+      eventType: "returned_with_file",
+      note: null,
+      versionNumber: 2,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  } else if (spec.resultAction === "returned_with_reply") {
+    events.push({
+      eventType: "returned_with_reply",
+      note: spec.resultNote ?? null,
+      versionNumber: null,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  } else if (spec.resultAction === "review_completed") {
+    events.push({
+      eventType: "review_completed",
+      note: spec.resultNote ?? null,
+      versionNumber: null,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  } else if (spec.resultAction === "approved") {
+    events.push({
+      eventType: "approved",
+      note: null,
+      versionNumber: 1,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  }
+  if (spec.requestStatus === "completed") {
+    events.push({
+      eventType: "completed",
+      note: null,
+      versionNumber: spec.withFile ? 1 : null,
+      actorMemberId: toMemberId,
+      createdAt: at,
+    });
+  }
+  if (spec.requestStatus === "cancelled") {
+    events.push({
+      eventType: "cancelled",
+      note: null,
+      versionNumber: null,
+      actorMemberId: fromMemberId,
+      createdAt: at,
+    });
+  }
+  if (spec.hopStatus === "failed") {
+    events.push({
+      eventType: "failed",
+      note: null,
+      versionNumber: null,
+      actorMemberId: fromMemberId,
+      createdAt: at,
+    });
+  }
+  return events;
+}
+
 function makePair(
   spec: CardSpec,
   workspaceId: string,
@@ -134,7 +262,7 @@ function makePair(
     returnBlake3: null,
     returnStoragePath: null,
     versions,
-    events: [],
+    events: designEvents(spec, fromMemberId, toMemberId, hoursAgoIso(spec.hoursAgo + 6), at),
     flowVersion: 2,
     requestStatus,
     activeTransferId: settled ? null : `${spec.id}-hop`,

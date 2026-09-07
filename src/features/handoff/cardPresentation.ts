@@ -31,15 +31,23 @@ export type CardPeople = {
   holderLine: string | null;
 };
 
+export type CardCounterpart = {
+  id: string;
+  name: string;
+  email: string | null;
+};
+
 export type CardPresentation = {
   statusLabel: string;
   statusIcon: IconName;
   tone: CardTone;
   headline: string;
+  title: string | null;
   subjectKind: SubjectKind;
   subjectText: string | null;
   instruction: string | null;
   people: CardPeople;
+  counterpart: CardCounterpart | null;
   dueLabel: string | null;
   dueTone: DueTone | null;
   versionLabel: string | null;
@@ -261,35 +269,28 @@ function headlineForLegacy(card: HandoffCardView, recipientName: string): string
   return he.needUpdate;
 }
 
+function realFilename(card: HandoffCardView): string | null {
+  const filename = card.filename?.trim() || null;
+  if (!filename || isPlaceholderFile(filename)) {
+    return null;
+  }
+  return filename;
+}
+
+function titleFor(card: HandoffCardView): string | null {
+  return card.instruction?.trim() || null;
+}
+
 function subjectFor(card: HandoffCardView): { kind: SubjectKind; text: string | null } {
-  const pending = isFileRequestPending(card);
-  if (pending) {
-    const description = card.instruction?.trim() || null;
-    const filename = card.filename?.trim() || null;
-    if (description) {
-      return { kind: "fileRequest", text: description };
-    }
-    if (filename && !isPlaceholderFile(filename)) {
+  if (isFileRequestPending(card)) {
+    const instruction = card.instruction?.trim() || null;
+    const filename = realFilename(card);
+    if (filename && filename !== instruction) {
       return { kind: "fileRequest", text: filename };
     }
     return { kind: "fileRequest", text: null };
   }
-  const filename = card.filename?.trim() || null;
-  if (!filename || isPlaceholderFile(filename)) {
-    return { kind: "file", text: null };
-  }
-  return { kind: "file", text: filename };
-}
-
-function instructionFor(card: HandoffCardView, subject: { kind: SubjectKind; text: string | null }) {
-  const text = card.instruction?.trim() || null;
-  if (!text) {
-    return null;
-  }
-  if (subject.kind === "fileRequest" && subject.text === text) {
-    return null;
-  }
-  return text;
+  return { kind: "file", text: realFilename(card) };
 }
 
 function peopleFor(
@@ -323,6 +324,29 @@ function peopleFor(
   };
 }
 
+function counterpartFor(
+  people: CardPeople,
+  currentMemberId: string | null,
+  emailOf?: (id: string) => string | null,
+): CardCounterpart | null {
+  const counterpartId =
+    currentMemberId && currentMemberId === people.senderId
+      ? people.recipientId
+      : people.senderId;
+  const name =
+    counterpartId === people.senderId ? people.senderName : people.recipientName;
+  if (!name) {
+    return null;
+  }
+  const email = emailOf?.(counterpartId)?.trim() || null;
+  return { id: counterpartId, name, email };
+}
+
+export function counterpartHandle(counterpart: CardCounterpart | null): string | null {
+  const name = counterpart?.name.trim();
+  return name || null;
+}
+
 function versionLabelFor(card: HandoffCardView): string | null {
   const version = card.latestVersionNumber;
   if (version == null || version <= 0) {
@@ -338,7 +362,11 @@ export function presentHandoffCard(
   card: HandoffCardView,
   currentMemberId: string | null,
   nameOf: (id: string) => string,
-  options: { useMe?: boolean; now?: Date } = {},
+  options: {
+    useMe?: boolean;
+    now?: Date;
+    emailOf?: (id: string) => string | null;
+  } = {},
 ): CardPresentation {
   const useMe = options.useMe !== false;
   const status =
@@ -359,10 +387,12 @@ export function presentHandoffCard(
     statusIcon: status.icon,
     tone: status.tone,
     headline,
+    title: titleFor(card),
     subjectKind: subject.kind,
     subjectText: subject.text,
-    instruction: instructionFor(card, subject),
+    instruction: null,
     people,
+    counterpart: counterpartFor(people, currentMemberId, options.emailOf),
     dueLabel: due?.label ?? null,
     dueTone: due?.tone ?? null,
     versionLabel: versionLabelFor(card),

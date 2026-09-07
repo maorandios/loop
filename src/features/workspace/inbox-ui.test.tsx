@@ -86,21 +86,23 @@ describe("Inbox UI", () => {
     renderRecipient();
     expect(screen.getAllByRole("tab")).toHaveLength(3);
     expect(screen.queryByRole("tab", { name: `${he.allRequests} 1` })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: `${he.done} 0` })).not.toBeInTheDocument();
   });
 
   it("maps the three mailbox tabs with counts", () => {
     renderRecipient();
     expect(screen.getByRole("button", { name: he.filterRequests })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: `${he.feed} 2` })).toHaveAttribute(
       "aria-selected",
       "true",
     );
+    expect(screen.getByRole("tab", { name: `${he.waitingForMe} 1` })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: `${he.waitingForOthers} 0` })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.done} 0` })).toBeInTheDocument();
   });
 
   it("keeps a request on a single row", () => {
     renderRecipient();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     expect(screen.getAllByTitle("v2-active.docx")).toHaveLength(1);
   });
 
@@ -108,7 +110,8 @@ describe("Inbox UI", () => {
     const approve = vi.fn();
     const reject = vi.fn();
     renderRecipient({ onApprove: approve, onReject: reject });
-    expect(screen.getByRole("button", { name: he.openAndHandle })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    expect(screen.getByRole("button", { name: he.moreActions })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     fireEvent.click(screen.getByRole("menuitem", { name: he.approve }));
     expect(approve).toHaveBeenCalledTimes(1);
@@ -120,15 +123,13 @@ describe("Inbox UI", () => {
   it("opens request details from the card and restores focus", () => {
     const openV2 = vi.fn();
     renderRecipient({ onOpenV2: openV2 });
-    fireEvent.click(screen.getByRole("button", { name: he.openAndHandle }));
-    expect(openV2).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     const file = screen.getByText("v2-active.docx");
     fireEvent.click(file);
     expect(screen.getByRole("heading", { name: he.requestDetails })).toHaveFocus();
-    expect(screen.getByText(he.toRecipient)).toBeInTheDocument();
+    expect(screen.queryByText(he.toRecipient)).not.toBeInTheDocument();
     expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("דני").length).toBeGreaterThan(0);
+    expect(screen.getByText("נא לאשר")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
     expect(document.activeElement).toHaveClass("fr-card-compact");
@@ -156,6 +157,7 @@ describe("Inbox UI", () => {
         onDownloadAndOpen={() => undefined}
       />,
     );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 5` }));
     const list = document.querySelector(".fr-scroll") as HTMLElement;
     list.scrollTop = 96;
     fireEvent.click(screen.getByText("קובץ-0.docx"));
@@ -183,6 +185,7 @@ describe("Inbox UI", () => {
 
   it("expands and collapses history on the details screen", () => {
     renderRecipient();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     fireEvent.click(screen.getByText("v2-active.docx"));
     fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
     expect(screen.getByRole("button", { name: he.hideHistory })).toHaveAttribute(
@@ -206,6 +209,7 @@ describe("Inbox UI", () => {
   it("labels every icon button and respects reduced motion", () => {
     expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(true);
     renderRecipient();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     for (const button of document.querySelectorAll(".fr-icon-btn")) {
       expect(button).toHaveAttribute("aria-label");
     }
@@ -217,6 +221,7 @@ describe("Inbox UI", () => {
 
   it("keeps overflow actions inside the window and does not leak technical ids", () => {
     renderRecipient();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
     fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
