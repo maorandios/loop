@@ -514,7 +514,7 @@ describe("App cloud workspace flow", () => {
     render(
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
-    expect(await screen.findByText(he.noFeed)).toBeInTheDocument();
+    expect(await screen.findByText(he.noPrimaryAction)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
 
@@ -541,7 +541,7 @@ describe("App cloud workspace flow", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.waitingForMe}\\s`) }));
+    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("storagePath");
@@ -593,7 +593,7 @@ describe("App cloud workspace flow", () => {
     render(
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
-    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.waitingForMe}\\s`) }));
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     handoffService.failNextSnapshot();
     handoffService.notifyIncoming();
@@ -892,14 +892,14 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
-    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.waitingForOthers}\\s`) }));
-    fireEvent.click(await screen.findByText("דוח.docx"));
+    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
+    fireEvent.click(await screen.findByText("בדוק"));
     fireEvent.click(await screen.findByRole("button", { name: he.acceptAndClose }));
     await waitFor(() => {
       expect(handoffService.completeCalls).toEqual(["handoff-1"]);
     });
     fireEvent.click(screen.getByRole("button", { name: he.back }));
-    fireEvent.click(screen.getByRole("button", { name: he.filterCompleted }));
+    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.primaryCompleted}\\s`) }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.getAllByText(he.handoffStatus.completed).length).toBeGreaterThan(0);
   });

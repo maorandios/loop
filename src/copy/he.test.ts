@@ -87,6 +87,12 @@ describe("cloud error mapping", () => {
     expect(he.waitingForMe).toBe("אינבוקס");
     expect(he.feed).toBe("פיד");
     expect(he.noFeed).toBe("אין אירועים בפיד");
+    expect(he.primaryAction).toBe("פעולה");
+    expect(he.primaryInfo).toBe("ידיעה");
+    expect(he.primaryCompleted).toBe("הושלם");
+    expect(he.noPrimaryAction).toBe("אין בקשות לפעולה");
+    expect(he.noPrimaryInfo).toBe("אין בקשות לידיעה");
+    expect(he.noPrimaryCompleted).toBe("אין בקשות שהושלמו");
     expect(he.filterAction).toBe("לפעולה");
     expect(he.filterInfo).toBe("לידיעה");
     expect(he.filterCompleted).toBe("הושלם");

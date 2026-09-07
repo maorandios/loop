@@ -64,12 +64,12 @@ describe("FileRelay Fluent UI", () => {
       he.settings,
     );
     expect(screen.getByRole("button", { name: he.newRequest })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
-    expect(screen.getByRole("button", { name: he.moreActions })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
-    expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.showHistory })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.showHistory })).toBeInTheDocument();
   });
 
   it("keeps reminder and cancel reachable from the overflow menu", () => {
@@ -87,10 +87,11 @@ describe("FileRelay Fluent UI", () => {
         onCancelV2={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
-    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
-    expect(screen.getByRole("menuitem", { name: he.sendReminder })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.cancelRequest })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryInfo} 1` }));
+    expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.sendReminder })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.cancelRequest })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(
       /returned_to_sender|handoff_id|storagePath|flow_version|active_transfer/i,
     );
@@ -120,7 +121,7 @@ describe("FileRelay Fluent UI", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     const file = screen.getByTitle("מחירון-Supplier-2026.xlsx");
     expect(file).toHaveAttribute("dir", "auto");
     expect(file.className).toMatch(/fr-plaintext|fr-file-name/);

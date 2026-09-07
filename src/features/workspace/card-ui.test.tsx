@@ -75,7 +75,7 @@ describe("request card UI", () => {
         onDownloadAndOpen={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.getByText("נא לוודא שהסכומים תואמים לדוח הרבעוני")).toBeInTheDocument();
     expect(screen.getByText("מאור")).toBeInTheDocument();
     expect(screen.queryByText("maor@drops.app")).not.toBeInTheDocument();
@@ -84,7 +84,7 @@ describe("request card UI", () => {
     expect(screen.queryByText("dani@drops.app")).not.toBeInTheDocument();
     expect(screen.getByText("עד 10 בספטמבר")).toBeInTheDocument();
     expect(document.querySelector(".fr-due-soon, .fr-due-overdue")).toBeFalsy();
-    expect(screen.getByText("גרסה 1")).toBeInTheDocument();
+    expect(screen.queryByText("גרסה 1")).not.toBeInTheDocument();
     expect(screen.queryByText(he.noDueDate)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     const file = screen.getByTitle("דוח.docx");
@@ -97,8 +97,9 @@ describe("request card UI", () => {
       "נא לוודא שהסכומים תואמים לדוח הרבעוני",
     );
     expect(document.querySelector(".fr-status")?.textContent).not.toContain("מאור");
-    expect(document.querySelector(".fr-status .fr-activity-time")).toBeTruthy();
-    expect(document.querySelector(".fr-card-status-end .fr-activity-time")).toBeFalsy();
+    expect(document.querySelector(".fr-status .fr-activity-time")).toBeFalsy();
+    expect(document.querySelector(".fr-card-status .fr-activity-time")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.downloadAndOpen })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/active|returned_to_sender|flow_version|uuid|storagePath/i);
     expect(document.body.textContent ?? "").not.toMatch(/[\u{1F300}-\u{1FAFF}]/u);
@@ -121,7 +122,7 @@ describe("request card UI", () => {
         ]}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.getByText(/באיחור/)).toBeInTheDocument();
     expect(document.querySelector(".fr-due-soon, .fr-due-overdue")).toBeFalsy();
   });
@@ -152,7 +153,7 @@ describe("request card UI", () => {
         onAttachFileRequest={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.queryByText(he.needAttachFile)).not.toBeInTheDocument();
     expect(screen.getByText("דוח הכספים לשנת 2021")).toBeInTheDocument();
     expect(screen.queryByText("unknown.txt")).not.toBeInTheDocument();
@@ -176,17 +177,17 @@ describe("request card UI", () => {
         onOpenV2={openV2}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForOthers} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryCompleted} 1` }));
     expect(screen.queryByRole("button", { name: he.openToReview })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openFile })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.downloadAndOpen }));
     expect(openV2).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("v2-completed.docx"));
+    fireEvent.click(document.querySelector(".fr-card-compact") as HTMLElement);
     expect(screen.getByRole("heading", { name: he.requestDetails })).toBeInTheDocument();
   });
 
-  it("keeps all v1 and v2 secondary actions in the overflow menu", () => {
+  it("keeps v1 and v2 actions on the details screen, not a list menu", () => {
     const approve = vi.fn();
     const { record, transfers } = v2RootActive();
     render(
@@ -203,12 +204,14 @@ describe("request card UI", () => {
         onReject={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
-    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
-    expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.showHistory })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("menuitem", { name: he.approve }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.showHistory })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(approve).toHaveBeenCalledTimes(1);
   });
 
@@ -226,7 +229,7 @@ describe("request card UI", () => {
         onOpenV2={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.waitingForMe} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(document.querySelector(".fr-card-status")).toBeTruthy();
     expect(document.querySelector(".fr-card-actor")).toBeFalsy();
     expect(document.querySelector(".fr-sentence-at")?.textContent).toBe("@");

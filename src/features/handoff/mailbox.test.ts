@@ -7,7 +7,6 @@ import {
   isFeedEventType,
   mailboxCards,
   primaryCounts,
-  toggleStatusFilter,
   visibleListItems,
 } from "./mailbox";
 import { MEMBER, memberName, v1Completed, v2Completed, v2RootActive, v2RootFailed } from "./view.fixtures";
@@ -150,48 +149,49 @@ describe("feed events", () => {
 });
 
 describe("primary counts and visible items", () => {
-  it("keeps primary counts stable while a status filter is on", () => {
+  it("counts unique cards by status and lists that bucket", () => {
     const projected = present(MEMBER.recipient);
-    const counts = primaryCounts(projected, MEMBER.recipient);
-    const filtered = visibleListItems({
-      projected,
-      primaryView: "inbox",
-      statusFilter: "action",
-      extraFilter: EMPTY_INBOX_FILTER,
-      memberId: MEMBER.recipient,
+    expect(primaryCounts(projected, MEMBER.recipient)).toEqual({
+      action: 1,
+      info: 0,
+      completed: 0,
     });
-    expect(counts.inbox).toBe(1);
-    expect(counts.outbox).toBe(0);
-    expect(counts.feed).toBe(2);
-    expect(filtered).toHaveLength(1);
     expect(
       visibleListItems({
         projected,
-        primaryView: "inbox",
-        statusFilter: "completed",
+        primaryView: "action",
+        extraFilter: EMPTY_INBOX_FILTER,
+        memberId: MEMBER.recipient,
+      }),
+    ).toHaveLength(1);
+    expect(
+      visibleListItems({
+        projected,
+        primaryView: "completed",
         extraFilter: EMPTY_INBOX_FILTER,
         memberId: MEMBER.recipient,
       }),
     ).toHaveLength(0);
   });
 
-  it("shows every mailbox item when the status filter is null", () => {
+  it("puts a completed request on the completed tab", () => {
     const { record, transfers } = v2Completed();
     const projected = projectHandoffList([record], transfers, MEMBER.recipient, memberName);
     expect(
       visibleListItems({
         projected,
-        primaryView: "inbox",
-        statusFilter: null,
+        primaryView: "completed",
         extraFilter: EMPTY_INBOX_FILTER,
         memberId: MEMBER.recipient,
       }).map((item) => item.card.id),
     ).toEqual([record.id]);
-  });
-
-  it("toggles a single active status filter off on a second press", () => {
-    expect(toggleStatusFilter(null, "action")).toBe("action");
-    expect(toggleStatusFilter("action", "action")).toBeNull();
-    expect(toggleStatusFilter("action", "info")).toBe("info");
+    expect(
+      visibleListItems({
+        projected,
+        primaryView: "action",
+        extraFilter: EMPTY_INBOX_FILTER,
+        memberId: MEMBER.recipient,
+      }),
+    ).toHaveLength(0);
   });
 });

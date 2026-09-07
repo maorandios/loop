@@ -7,12 +7,11 @@ import { applyInboxFilter, type InboxExtraFilter } from "./inboxList";
 import type { LocalWorkState } from "./types";
 import type { HandoffCardView, ProjectedHandoffList } from "./view";
 
-export type PrimaryView = "feed" | "inbox" | "outbox";
-export type StatusFilter = "action" | "info" | "completed";
+export type PrimaryView = "action" | "info" | "completed";
+export type StatusFilter = PrimaryView;
 export type Mailbox = "inbox" | "outbox";
 
-export const PRIMARY_VIEWS: PrimaryView[] = ["feed", "inbox", "outbox"];
-export const STATUS_FILTERS: StatusFilter[] = ["action", "info", "completed"];
+export const PRIMARY_VIEWS: PrimaryView[] = ["action", "info", "completed"];
 
 const FEED_EVENT_TYPES = new Set([
   "created",
@@ -176,13 +175,6 @@ export function classifyStatus(
   return "info";
 }
 
-export function toggleStatusFilter(
-  current: StatusFilter | null,
-  next: StatusFilter,
-): StatusFilter | null {
-  return current === next ? null : next;
-}
-
 export function mailboxCards(
   projected: ProjectedHandoffList,
   mailbox: Mailbox,
@@ -220,45 +212,30 @@ export function buildFeedEvents(cards: HandoffCardView[]): FeedItem[] {
 export function primaryCounts(
   projected: ProjectedHandoffList,
   memberId: string | null | undefined,
+  localWorkOf?: (handoffId: string) => LocalWorkState,
 ): Record<PrimaryView, number> {
-  return {
-    feed: buildFeedEvents(projected.cards).length,
-    inbox: mailboxCards(projected, "inbox", memberId).length,
-    outbox: mailboxCards(projected, "outbox", memberId).length,
-  };
+  const workOf = localWorkOf ?? (() => "idle");
+  const counts: Record<PrimaryView, number> = { action: 0, info: 0, completed: 0 };
+  for (const card of uniqueCards(projected.cards)) {
+    counts[classifyStatus(card, memberId, workOf(card.id))] += 1;
+  }
+  return counts;
 }
 
 export function visibleListItems(input: {
   projected: ProjectedHandoffList;
   primaryView: PrimaryView;
-  statusFilter: StatusFilter | null;
   extraFilter: InboxExtraFilter;
   memberId: string | null | undefined;
   localWorkOf?: (handoffId: string) => LocalWorkState;
 }): ListItem[] {
   const localWorkOf = input.localWorkOf ?? (() => "idle");
-  const matchesFilter = (card: HandoffCardView) =>
-    !input.statusFilter ||
-    classifyStatus(card, input.memberId, localWorkOf(card.id)) === input.statusFilter;
-
-  if (input.primaryView === "feed") {
-    return buildFeedEvents(projectedCardsMatching(input.projected.cards, input.extraFilter))
-      .filter((item) => matchesFilter(item.card))
-      .map((item) => ({
-        key: item.id,
-        card: { ...item.card, lastActivityAt: item.createdAt },
-      }));
-  }
-
-  const mailbox = mailboxCards(input.projected, input.primaryView, input.memberId);
-  return applyInboxFilter(mailbox, input.extraFilter)
-    .filter(matchesFilter)
+  return applyInboxFilter(uniqueCards(input.projected.cards), input.extraFilter)
+    .filter(
+      (card) => classifyStatus(card, input.memberId, localWorkOf(card.id)) === input.primaryView,
+    )
+    .sort((left, right) =>
+      compareStamp(left.lastActivityAt, right.lastActivityAt, left.id, right.id),
+    )
     .map((card) => ({ key: card.id, card }));
-}
-
-function projectedCardsMatching(
-  cards: HandoffCardView[],
-  extraFilter: InboxExtraFilter,
-): HandoffCardView[] {
-  return applyInboxFilter(uniqueCards(cards), extraFilter);
 }

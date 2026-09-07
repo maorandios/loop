@@ -14,12 +14,9 @@ import {
 } from "../handoff/inboxList";
 import {
   PRIMARY_VIEWS,
-  STATUS_FILTERS,
   primaryCounts,
-  toggleStatusFilter,
   visibleListItems,
   type PrimaryView,
-  type StatusFilter,
 } from "../handoff/mailbox";
 import {
   buildDesignInbox,
@@ -63,7 +60,7 @@ import type {
   SendProgress,
   TransferRecord,
 } from "../handoff/types";
-import { latestHandoffVersion, versionLabel } from "../handoff/versions";
+import { latestHandoffVersion } from "../handoff/versions";
 import type { Workspace, WorkspaceMember } from "./types";
 
 type WorkspaceReadyScreenProps = {
@@ -183,73 +180,36 @@ function runAfterMotion(ms: number, fn: () => void) {
   window.setTimeout(fn, wait);
 }
 
-function MenuItem({
-  icon,
-  children,
-  disabled,
-  danger,
-  onClick,
-}: {
-  icon: IconName;
-  children: string;
-  disabled?: boolean;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      className={danger ? "fr-menu-danger" : undefined}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      <FluentIcon name={icon} size={16} />
-      {children}
-    </button>
-  );
-}
-
 const TABS: PrimaryView[] = PRIMARY_VIEWS;
 
 function tabLabel(tab: PrimaryView): string {
-  if (tab === "feed") {
-    return he.feed;
+  if (tab === "action") {
+    return he.primaryAction;
   }
-  if (tab === "inbox") {
-    return he.waitingForMe;
+  if (tab === "info") {
+    return he.primaryInfo;
   }
-  return he.waitingForOthers;
+  return he.primaryCompleted;
 }
 
 function tabIcon(tab: PrimaryView): IconName {
-  if (tab === "feed") {
-    return "live";
+  if (tab === "action") {
+    return "mailInboxArrowDown";
   }
-  if (tab === "inbox") {
-    return "inbox";
+  if (tab === "info") {
+    return "mailInboxArrowUp";
   }
-  return "outbox";
+  return "mailInboxCheckmark";
 }
 
 function emptyLabel(tab: PrimaryView): string {
-  if (tab === "feed") {
-    return he.noFeed;
+  if (tab === "action") {
+    return he.noPrimaryAction;
   }
-  if (tab === "inbox") {
-    return he.noWaitingForMe;
+  if (tab === "info") {
+    return he.noPrimaryInfo;
   }
-  return he.noWaitingForOthers;
-}
-
-function statusFilterLabel(filter: StatusFilter): string {
-  if (filter === "action") {
-    return he.filterAction;
-  }
-  if (filter === "info") {
-    return he.filterInfo;
-  }
-  return he.filterCompleted;
+  return he.noPrimaryCompleted;
 }
 
 export function WorkspaceReadyScreen(props: WorkspaceReadyScreenProps) {
@@ -347,8 +307,7 @@ function WorkspaceReadyView({
   });
   const { pref: themePref, setPref: setThemePref } = useTheme();
   const [copyError, setCopyError] = useState<string | null>(null);
-  const [primaryView, setPrimaryView] = useState<PrimaryView>("feed");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter | null>(null);
+  const [primaryView, setPrimaryView] = useState<PrimaryView>("action");
   const [extraFilter, setExtraFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [draftFilter, setDraftFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -381,7 +340,6 @@ function WorkspaceReadyView({
   const [revisionError, setRevisionError] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [overflowFor, setOverflowFor] = useState<string | null>(null);
   const reconciling = new Set(reconcilingIds);
   const watchFailed = new Set(watchFailedIds);
   const projected = useMemo(
@@ -395,11 +353,12 @@ function WorkspaceReadyView({
       ),
     [handoffs, transfers, currentMemberId, members, v2LoadFailed],
   );
-  const tabCounts = primaryCounts(projected, currentMemberId);
+  const tabCounts = primaryCounts(projected, currentMemberId, (handoffId) =>
+    localStates[handoffId] ?? "idle",
+  );
   const visibleItems = visibleListItems({
     projected,
     primaryView,
-    statusFilter,
     extraFilter,
     memberId: currentMemberId,
     localWorkOf: (handoffId) => localStates[handoffId] ?? "idle",
@@ -425,10 +384,6 @@ function WorkspaceReadyView({
         setRevisionFor(null);
         return;
       }
-      if (overflowFor) {
-        setOverflowFor(null);
-        return;
-      }
       if (filterOpen) {
         setFilterOpen(false);
         return;
@@ -447,7 +402,7 @@ function WorkspaceReadyView({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [composeOpen, detailId, filterOpen, overflowFor, resultNoteFor, revisionFor, settingsOpen]);
+  }, [composeOpen, detailId, filterOpen, resultNoteFor, revisionFor, settingsOpen]);
 
   useEffect(() => {
     if (detailId && !screenLeaving) {
@@ -910,29 +865,6 @@ function WorkspaceReadyView({
                 </button>
               ))}
             </div>
-            <div
-              className="fr-status-seg"
-              role="group"
-              aria-label={he.statusFilter}
-              data-filter={statusFilter ?? "none"}
-              data-index={statusFilter ? String(STATUS_FILTERS.indexOf(statusFilter)) : ""}
-            >
-              <span className="fr-status-seg-pill" aria-hidden="true" />
-              {STATUS_FILTERS.map((filter) => (
-                <button
-                  key={filter}
-                  type="button"
-                  className="fr-status-seg-btn"
-                  aria-pressed={statusFilter === filter}
-                  aria-label={statusFilterLabel(filter)}
-                  onClick={() => {
-                    setStatusFilter((current) => toggleStatusFilter(current, filter));
-                  }}
-                >
-                  {statusFilterLabel(filter)}
-                </button>
-              ))}
-            </div>
           </div>
         )}
 
@@ -953,7 +885,7 @@ function WorkspaceReadyView({
             ).map((group) => (
               <div key={group.key} className={detailCard ? undefined : "fr-list-swap"}>
                 <div
-                  key={detailCard ? "detail" : (statusFilter ?? "all")}
+                  key={detailCard ? "detail" : primaryView}
                   className={detailCard ? undefined : "fr-list-filter"}
                 >
                 {group.cards.map((item) => {
@@ -1024,7 +956,6 @@ function WorkspaceReadyView({
               const changed = workingFileChanged(inbox, handoff.id);
               const historyShown = historyOpen === handoff.id;
               const revisionOpen = revisionFor === handoff.id;
-              const openVersion = latest ? versionLabel(latest.versionNumber) : local?.version;
               const compact = !detailCard;
               const visualPrimary =
                 localWork === "retry" || localWork === "offline"
@@ -1134,247 +1065,12 @@ function WorkspaceReadyView({
                 >
                   <div className="fr-card-status">
                     <span className={`fr-status fr-status-${presented.tone}`}>
-                      <FluentIcon name={presented.statusIcon} size={16} />
+                      <FluentIcon name={presented.statusIcon} size={14} />
                       {presented.statusLabel}
-                      <span className="fr-status-sep" aria-hidden="true">
-                        ·
-                      </span>
-                      <span className="fr-activity-time">
-                        {formatRelativeTime(new Date(card.lastActivityAt))}
-                      </span>
                     </span>
-                    <div className="fr-card-status-end">
-                    <div className="fr-overflow">
-                      <button
-                        type="button"
-                        className="fr-icon-btn"
-                        aria-label={he.moreActions}
-                        aria-expanded={overflowFor === handoff.id}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setOverflowFor(overflowFor === handoff.id ? null : handoff.id);
-                        }}
-                      >
-                        <FluentIcon name="moreHorizontal" />
-                      </button>
-                      {overflowFor === handoff.id ? (
-                        <div className="fr-menu" role="menu">
-                          {showOpenV2 &&
-                          compact &&
-                          primaryKind !== "openAndHandle" &&
-                          primaryKind !== "openToReview" &&
-                          primaryKind !== "openFile" ? (
-                            <MenuItem
-                              icon="open"
-                              disabled={v2Busy || downloadingId === handoff.id}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onOpenV2?.(handoff);
-                              }}
-                            >
-                              {card.section === "done"
-                                ? he.openFile
-                                : already
-                                  ? he.open
-                                  : senderActs.accept
-                                    ? he.openToReview
-                                    : he.openAndHandle}
-                            </MenuItem>
-                          ) : null}
-                          {compact && showLegacyOpenIn && primaryKind === "returnFile" ? (
-                            <MenuItem
-                              icon="open"
-                              disabled={returning || downloadingId === handoff.id || !onDownloadAndOpen}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onDownloadAndOpen?.(handoff);
-                              }}
-                            >
-                              {already ? he.open : he.openAndHandle}
-                            </MenuItem>
-                          ) : null}
-                          {compact &&
-                          isLegacy &&
-                          canReturn &&
-                          onReturnFile &&
-                          primaryKind !== "returnFile" ? (
-                            <MenuItem
-                              icon="arrowSync"
-                              disabled={returning}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onReturnFile(handoff);
-                              }}
-                            >
-                              {returnFileToLabel(sender)}
-                            </MenuItem>
-                          ) : null}
-                          {primary === "approve" && onApprove ? (
-                            <MenuItem
-                              icon="checkmark"
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                if (changed && !window.confirm(he.fileChangedConfirm)) {
-                                  return;
-                                }
-                                void onApprove(handoff, null);
-                              }}
-                            >
-                              {he.approve}
-                            </MenuItem>
-                          ) : null}
-                          {primary === "review" && onFinishReview ? (
-                            <MenuItem
-                              icon="checkmark"
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onFinishReview(handoff, null);
-                              }}
-                            >
-                              {he.finishReview}
-                            </MenuItem>
-                          ) : null}
-                          {primary === "update" && onReturnUpdate ? (
-                            <MenuItem
-                              icon="arrowSync"
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                if (!changed) {
-                                  setResultNoteFor(handoff.id);
-                                  setResultNoteError(null);
-                                  return;
-                                }
-                                void onReturnUpdate(handoff, null);
-                              }}
-                            >
-                              {he.returnUpdate}
-                            </MenuItem>
-                          ) : null}
-                          {senderActs.revision ? (
-                            <MenuItem
-                              icon="arrowSync"
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                setRevisionFor(handoff.id);
-                                setRevisionNote("");
-                                setRevisionError(null);
-                              }}
-                            >
-                              {senderActs.fileRequestWording ? he.requestOtherFile : he.requestRevision}
-                            </MenuItem>
-                          ) : null}
-                          {isLegacy && role === "sender" && handoff.status === "returned" ? (
-                            <MenuItem
-                              icon="arrowSync"
-                              disabled={returning}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                setRevisionFor(handoff.id);
-                                setRevisionNote("");
-                                setRevisionError(null);
-                              }}
-                            >
-                              {he.requestRevision}
-                            </MenuItem>
-                          ) : null}
-                          {primary === "attach" && onCannotProvide ? (
-                            <MenuItem
-                              icon="alert"
-                              danger
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                setResultNoteFor(handoff.id);
-                                setResultNote("");
-                                setResultNoteError(null);
-                              }}
-                            >
-                              {he.cannotProvide}
-                            </MenuItem>
-                          ) : null}
-                          {isLegacy && already && onOpenFolder && openVersion ? (
-                            <MenuItem
-                              icon="folder"
-                              disabled={returning}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onOpenFolder(handoff.id, openVersion);
-                              }}
-                            >
-                              {he.openFolder}
-                            </MenuItem>
-                          ) : null}
-                          {showRemind ? (
-                            <MenuItem
-                              icon="clock"
-                              disabled={v2Busy}
-                              onClick={() => {
-                                setOverflowFor(null);
-                                void onRemind?.(handoff);
-                              }}
-                            >
-                              {he.sendReminder}
-                            </MenuItem>
-                          ) : null}
-                          {history.length > 0 ? (
-                            <MenuItem
-                              icon="history"
-                              onClick={() => {
-                                setOverflowFor(null);
-                                if (compact) {
-                                  openDetail(handoff.id);
-                                }
-                                setHistoryOpen(historyShown && !compact ? null : handoff.id);
-                              }}
-                            >
-                              {he.showHistory}
-                            </MenuItem>
-                          ) : null}
-                          {(primary === "approve" ||
-                            primary === "review" ||
-                            primary === "update") &&
-                          onReject ? (
-                            <>
-                              <div className="fr-menu-sep" />
-                              <MenuItem
-                                icon="alert"
-                                danger
-                                disabled={v2Busy}
-                                onClick={() => {
-                                  setOverflowFor(null);
-                                  setResultNoteFor(handoff.id);
-                                  setResultNote("");
-                                  setResultNoteError(null);
-                                }}
-                              >
-                                {he.reject}
-                              </MenuItem>
-                            </>
-                          ) : null}
-                          {showCancel ? (
-                            <>
-                              <div className="fr-menu-sep" />
-                              <MenuItem
-                                icon="dismiss"
-                                danger
-                                disabled={v2Busy}
-                                onClick={() => {
-                                  setOverflowFor(null);
-                                  void onCancelV2?.(handoff);
-                                }}
-                              >
-                                {he.cancelRequest}
-                              </MenuItem>
-                            </>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                    </div>
+                    <span className="fr-activity-time">
+                      {formatRelativeTime(new Date(card.lastActivityAt))}
+                    </span>
                   </div>
                   {handle || presented.title ? (
                     <div className="fr-sentence">
@@ -1402,20 +1098,12 @@ function WorkspaceReadyView({
                       ) : null}
                     </div>
                   ) : null}
-                  {presented.dueLabel || presented.versionLabel ? (
+                  {presented.dueLabel ? (
                     <div className="fr-meta-row">
-                      {presented.dueLabel ? (
-                        <span>
-                          <FluentIcon name="calendar" size={14} />
-                          {presented.dueLabel}
-                        </span>
-                      ) : null}
-                      {presented.versionLabel ? (
-                        <span>
-                          <FluentIcon name="history" size={14} />
-                          {presented.versionLabel}
-                        </span>
-                      ) : null}
+                      <span>
+                        <FluentIcon name="calendar" size={14} />
+                        {presented.dueLabel}
+                      </span>
                     </div>
                   ) : null}
                   {detailCard && card.relevantNote ? (
@@ -1685,27 +1373,56 @@ function WorkspaceReadyView({
                         ) : null}
                       </>
                     ) : null}
+                    {!compact && showRemind ? (
+                      <button
+                        type="button"
+                        className={btnClass(false)}
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onRemind?.(handoff);
+                        }}
+                      >
+                        {he.sendReminder}
+                      </button>
+                    ) : null}
+                    {!compact && showCancel ? (
+                      <button
+                        type="button"
+                        className={btnClass(false, true)}
+                        disabled={v2Busy}
+                        onClick={() => {
+                          void onCancelV2?.(handoff);
+                        }}
+                      >
+                        {he.cancelRequest}
+                      </button>
+                    ) : null}
                   </div>
                   ) : null}
                   {presented.subjectText ? (
-                    <div className="fr-file">
-                      <FluentIcon name="document" size={14} />
-                      <FileName name={presented.subjectText} className="fr-file-name" />
-                      {canDownloadFile ? (
-                        <button
-                          type="button"
-                          className="fr-file-download"
-                          aria-label={he.downloadAndOpen}
-                          disabled={v2Busy || returning || downloadingId === handoff.id}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            downloadCardFile();
-                          }}
-                        >
+                    canDownloadFile ? (
+                      <button
+                        type="button"
+                        className="fr-file"
+                        aria-label={he.downloadAndOpen}
+                        disabled={v2Busy || returning || downloadingId === handoff.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          downloadCardFile();
+                        }}
+                      >
+                        <FluentIcon name="documentMultiple" size={14} />
+                        <FileName name={presented.subjectText} className="fr-file-name" />
+                        <span className="fr-file-download" aria-hidden="true">
                           <FluentIcon name="arrowCircleDown" size={14} />
-                        </button>
-                      ) : null}
-                    </div>
+                        </span>
+                      </button>
+                    ) : (
+                      <div className="fr-file">
+                        <FluentIcon name="documentMultiple" size={14} />
+                        <FileName name={presented.subjectText} className="fr-file-name" />
+                      </div>
+                    )
                   ) : null}
                   {resultNoteFor === handoff.id ? (
                     <div className="fr-overlay" role="presentation">

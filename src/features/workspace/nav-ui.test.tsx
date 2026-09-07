@@ -55,79 +55,39 @@ function tab(label: string) {
   return screen.getByRole("tab", { name: new RegExp(`^${label}\\s`) });
 }
 
-describe("primary navigation and status filter", () => {
-  it("defaults to feed with no status filter", () => {
+describe("primary navigation", () => {
+  it("defaults to action and exposes only the three status tabs", () => {
     renderNav();
-    expect(tab(he.feed)).toHaveAttribute("aria-selected", "true");
-    expect(tab(he.waitingForMe)).toHaveAttribute("aria-selected", "false");
-    expect(tab(he.waitingForOthers)).toHaveAttribute("aria-selected", "false");
-    expect(screen.getByRole("button", { name: he.filterAction })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    expect(screen.getByRole("button", { name: he.filterInfo })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    expect(screen.getByRole("button", { name: he.filterCompleted })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-  });
-
-  it("exposes only feed, inbox, and outbox as primary tabs", () => {
-    renderNav();
+    expect(tab(he.primaryAction)).toHaveAttribute("aria-selected", "true");
+    expect(tab(he.primaryInfo)).toHaveAttribute("aria-selected", "false");
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-selected", "false");
     expect(screen.getAllByRole("tab")).toHaveLength(3);
-    expect(screen.queryByRole("tab", { name: new RegExp(`^${he.done}\\s`) })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: new RegExp(`^${he.feed}\\s`) })).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("tab", { name: new RegExp(`^${he.allRequests}\\s`) }),
+      screen.queryByRole("tab", { name: new RegExp(`^${he.waitingForMe}\\s`) }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.filterAction })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.filterInfo })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.filterCompleted })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: he.filterAny }),
+      screen.queryByRole("tab", { name: new RegExp(`^${he.waitingForOthers}\\s`) }),
     ).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: he.statusFilter })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.filterAction })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.filterInfo })).not.toBeInTheDocument();
   });
 
-  it("activates one status filter and clears it on a second press", () => {
+  it("switches between action, info, and completed", () => {
     renderNav();
-    const action = screen.getByRole("button", { name: he.filterAction });
-    const info = screen.getByRole("button", { name: he.filterInfo });
-    fireEvent.click(action);
-    expect(action).toHaveAttribute("aria-pressed", "true");
-    expect(info).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(info);
-    expect(action).toHaveAttribute("aria-pressed", "false");
-    expect(info).toHaveAttribute("aria-pressed", "true");
-    fireEvent.click(info);
-    expect(info).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(tab(he.primaryCompleted));
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(tab(he.primaryInfo));
+    expect(tab(he.primaryInfo)).toHaveAttribute("aria-selected", "true");
+    expect(tab(he.primaryAction)).toHaveAttribute("aria-selected", "false");
   });
 
-  it("keeps the status filter while switching primary views", () => {
+  it("counts one action and one completed for mixed requests", () => {
     renderNav();
-    fireEvent.click(screen.getByRole("button", { name: he.filterAction }));
-    fireEvent.click(tab(he.waitingForMe));
-    expect(screen.getByRole("button", { name: he.filterAction })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    fireEvent.click(tab(he.waitingForOthers));
-    expect(screen.getByRole("button", { name: he.filterAction })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-  });
-
-  it("does not change primary counts when a status filter is applied", () => {
-    renderNav();
-    const feed = tab(he.feed).getAttribute("aria-label");
-    const inbox = tab(he.waitingForMe).getAttribute("aria-label");
-    const outbox = tab(he.waitingForOthers).getAttribute("aria-label");
-    fireEvent.click(screen.getByRole("button", { name: he.filterAction }));
-    expect(tab(he.feed)).toHaveAttribute("aria-label", feed);
-    expect(tab(he.waitingForMe)).toHaveAttribute("aria-label", inbox);
-    expect(tab(he.waitingForOthers)).toHaveAttribute("aria-label", outbox);
+    expect(tab(he.primaryAction)).toHaveAttribute("aria-label", `${he.primaryAction} 1`);
+    expect(tab(he.primaryInfo)).toHaveAttribute("aria-label", `${he.primaryInfo} 0`);
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-label", `${he.primaryCompleted} 1`);
   });
 
   it("shows inbox items once and keeps v2 actions reachable", () => {
@@ -147,12 +107,12 @@ describe("primary navigation and status filter", () => {
         onReject={() => undefined}
       />,
     );
-    fireEvent.click(tab(he.waitingForMe));
     expect(screen.getAllByTitle("v2-active.docx")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: he.moreActions }));
-    expect(screen.getByRole("menuitem", { name: he.approve })).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: he.reject })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("menuitem", { name: he.approve }));
+    expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(approve).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).not.toMatch(
       /mine|watching|flow_version|storagePath|uuid|tus_chunk|retry/i,

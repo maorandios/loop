@@ -112,11 +112,12 @@ body,
 
 #root::after {
   position: absolute;
-  inset: 1px;
+  inset: 0;
   z-index: 80;
-  border: var(--window-stroke) solid var(--border-subtle);
-  border-radius: calc(var(--radius-card) - 1px);
+  border: 0;
+  border-radius: inherit;
   pointer-events: none;
+  box-shadow: inset 0 0 0 var(--window-stroke) var(--border-strong);
   content: "";
 }
 
@@ -621,7 +622,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 12px 14px;
+  padding: 8px 14px 12px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-card);
   background: var(--surface-1);
@@ -675,6 +676,7 @@ textarea {
   min-width: 0;
   align-items: baseline;
   gap: 0;
+  margin-top: 6px;
   line-height: 1.25;
 }
 
@@ -728,17 +730,37 @@ textarea {
 
 .fr-file {
   display: flex;
+  width: calc(100% + 28px);
   min-width: 0;
   align-items: center;
   gap: 8px;
-  margin-inline: -8px;
-  padding: 5px 8px;
-  border-radius: var(--radius-small);
+  margin-inline: -14px;
+  margin-bottom: -12px;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 0 0 calc(var(--radius-card) - 1px) calc(var(--radius-card) - 1px);
   background: var(--app-bg);
   color: var(--text-secondary);
+  font: inherit;
   font-size: 12px;
   font-weight: 400;
   line-height: 1.3;
+  text-align: start;
+}
+
+button.fr-file {
+  cursor: pointer;
+}
+
+button.fr-file:hover,
+button.fr-file:focus-visible {
+  background: color-mix(in srgb, var(--app-bg) 70%, var(--surface-hover));
+  color: var(--text-primary);
+}
+
+button.fr-file:disabled {
+  cursor: default;
+  opacity: 0.5;
 }
 
 .fr-file-name {
@@ -757,23 +779,7 @@ textarea {
   align-items: center;
   justify-content: center;
   margin-inline-end: -4px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-small);
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.fr-file-download:hover,
-.fr-file-download:focus-visible {
-  background: var(--surface-hover);
-  color: var(--text-primary);
-}
-
-.fr-file-download:disabled {
-  cursor: default;
-  opacity: 0.5;
+  color: inherit;
 }
 
 .fr-meta {
@@ -1264,7 +1270,7 @@ textarea {
 
 .fr-card-compact {
   cursor: pointer;
-  padding: 12px 14px;
+  padding: 8px 14px 12px;
   gap: 6px;
   transition:
     background var(--motion-fast) var(--motion-easing),
@@ -1282,8 +1288,12 @@ textarea {
 }
 
 .fr-card-settled {
-  padding: 10px 14px;
+  padding: 6px 14px 10px;
   gap: 5px;
+}
+
+.fr-card-settled .fr-file {
+  margin-bottom: -10px;
 }
 
 .fr-card-foot {
@@ -1317,7 +1327,7 @@ textarea {
 
 .fr-activity-time {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 9.9px;
   font-weight: 400;
   white-space: nowrap;
 }
@@ -1332,8 +1342,8 @@ textarea {
   display: inline-flex;
   min-width: 0;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 5px;
+  font-size: 10.8px;
   font-weight: 500;
 }
 
@@ -1411,7 +1421,8 @@ textarea {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-block: 4px;
+  margin-top: 4px;
+  margin-bottom: 9px;
   color: var(--text-tertiary);
   font-size: 11px;
 }
