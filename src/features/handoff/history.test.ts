@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { he } from "../../copy/he";
-import { visibleHistory } from "./history";
+import { historyIcon, visibleHistory } from "./history";
 import type { HandoffRecord } from "./types";
 
 function record(partial: Partial<HandoffRecord> = {}): HandoffRecord {
@@ -96,7 +96,7 @@ describe("handoff history", () => {
       he.historySent,
       he.historyOpened,
       he.historyModified,
-      "הוחזר · גרסה 3",
+      he.historyReturned,
       he.historyRevisionRequested,
       he.historyCompleted,
     ]);
@@ -244,5 +244,23 @@ describe("handoff history", () => {
       ).map((line) => line.title),
     ).toEqual([he.historyFileRequestSent, he.historyFileAttached, he.historyCouldNotProvide]);
     expect(fileRequest).toEqual([]);
+  });
+
+  it("picks a distinct icon for each visible history event", () => {
+    expect(historyIcon("sent")).toBe("arrowUpload");
+    expect(historyIcon("opened")).toBe("open");
+    expect(historyIcon("modified")).toBe("document");
+    expect(historyIcon("returned")).toBe("arrowDownload");
+    expect(historyIcon("approved")).toBe("checkmarkCircle");
+    expect(historyIcon("review_completed")).toBe("checkmark");
+    expect(historyIcon("returned_with_file")).toBe("attach");
+    expect(historyIcon("returned_with_reply")).toBe("mail");
+    expect(historyIcon("rejected")).toBe("dismissCircle");
+    expect(historyIcon("revision_requested")).toBe("arrowSync");
+    expect(historyIcon("completed")).toBe("mailInboxCheckmark");
+    expect(historyIcon("cancelled")).toBe("prohibited");
+    expect(historyIcon("failed")).toBe("errorCircle");
+    expect(historyIcon("sent")).not.toBe("history");
+    expect(historyIcon("opened")).not.toBe(historyIcon("approved"));
   });
 });

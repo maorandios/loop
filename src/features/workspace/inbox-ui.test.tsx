@@ -20,6 +20,7 @@ const members = [
     userId: "user-1",
     deviceId: "11111111-1111-4111-8111-111111111111",
     displayName: "מאור",
+    email: "maor@drops.app",
     joinedAt: "2026-09-02T00:00:00.000Z",
     lastSeenAt: "2026-09-02T00:00:00.000Z",
   },
@@ -29,6 +30,7 @@ const members = [
     userId: "user-2",
     deviceId: "22222222-2222-4222-8222-222222222222",
     displayName: "דני",
+    email: "dani@drops.app",
     joinedAt: "2026-09-02T00:00:00.000Z",
     lastSeenAt: "2026-09-02T00:00:00.000Z",
   },
@@ -113,8 +115,10 @@ describe("Inbox UI", () => {
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(approve).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     fireEvent.click(screen.getByRole("button", { name: he.reject }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
@@ -124,12 +128,18 @@ describe("Inbox UI", () => {
     renderRecipient({ onOpenV2: openV2 });
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     fireEvent.click(screen.getByText("נא לאשר"));
-    expect(screen.getByRole("heading", { name: he.requestDetails })).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "נא לאשר" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: he.back })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.newRequest })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.settings })).not.toBeInTheDocument();
+    expect(screen.queryByText(he.requestDetails)).not.toBeInTheDocument();
+    expect(screen.getByText("@מאור")).toBeInTheDocument();
+    expect(screen.getByText("maor@drops.app")).toBeInTheDocument();
+    expect(screen.getByText(he.activity)).toBeInTheDocument();
     expect(screen.queryByText(he.toRecipient)).not.toBeInTheDocument();
-    expect(screen.getAllByText("מאור").length).toBeGreaterThan(0);
     expect(screen.getByText("נא לאשר")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
-    expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "נא לאשר" })).not.toBeInTheDocument();
     expect(document.activeElement).toHaveClass("fr-card-compact");
   });
 
@@ -159,7 +169,7 @@ describe("Inbox UI", () => {
     const list = document.querySelector(".fr-scroll") as HTMLElement;
     list.scrollTop = 96;
     fireEvent.click(screen.getAllByText("נא לבדוק")[0]!);
-    expect(screen.getByRole("heading", { name: he.requestDetails })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "נא לבדוק" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     expect((document.querySelector(".fr-scroll") as HTMLElement).scrollTop).toBe(96);
   });
@@ -185,14 +195,14 @@ describe("Inbox UI", () => {
     renderRecipient();
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     fireEvent.click(screen.getByText("נא לאשר"));
-    fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
-    expect(screen.getByRole("button", { name: he.hideHistory })).toHaveAttribute(
-      "aria-expanded",
-      "true",
-    );
-    expect(document.querySelector(".fr-history-fold")).toHaveClass("fr-open");
     fireEvent.click(screen.getByRole("button", { name: he.hideHistory }));
+    expect(screen.getByRole("button", { name: he.showHistory })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
     expect(document.querySelector(".fr-history-fold")).not.toHaveClass("fr-open");
+    fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
+    expect(document.querySelector(".fr-history-fold")).toHaveClass("fr-open");
   });
 
   it("closes popovers with Escape and restores focus", () => {
@@ -212,7 +222,7 @@ describe("Inbox UI", () => {
       expect(button).toHaveAttribute("aria-label");
     }
     fireEvent.click(screen.getByText("נא לאשר"));
-    expect(screen.getByRole("heading", { name: he.requestDetails })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "נא לאשר" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     expect(screen.getByRole("button", { name: he.filterRequests })).toBeInTheDocument();
   });

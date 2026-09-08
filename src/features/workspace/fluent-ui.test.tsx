@@ -67,9 +67,26 @@ describe("FileRelay Fluent UI", () => {
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.actions })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.hideHistory })).toBeInTheDocument();
+    expect(document.querySelector(".fr-history-fold")).toHaveClass("fr-open");
+    expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
+    expect(screen.getByRole("button", { name: he.actions })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("group", { name: he.actions })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.showHistory })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.attachFile })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.sendReminder })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.cancelRequest })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.requestRevision })).not.toBeInTheDocument();
+    expect(document.querySelector(".fr-action-drawer .fr-command-list")).toBeTruthy();
+    expect(document.querySelector(".fr-card-detail .fr-command-list")).toBeFalsy();
+    expect(document.querySelector(".fr-overlay .fr-action-sheet")).toBeFalsy();
+    fireEvent.click(screen.getByRole("button", { name: he.reject }));
+    expect(document.querySelector(".fr-overlay .fr-dialog")).toBeFalsy();
+    expect(document.querySelector(".fr-detail-dock.fr-dock-open")).toBeTruthy();
+    expect(document.querySelector(".fr-detail-dock .fr-form-drawer")).toBeTruthy();
   });
 
   it("keeps reminder and cancel reachable from the overflow menu", () => {
@@ -90,6 +107,7 @@ describe("FileRelay Fluent UI", () => {
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryInfo} 1` }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.sendReminder })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.cancelRequest })).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(

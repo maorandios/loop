@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { he } from "../../copy/he";
 import type { HandoffRecord } from "../handoff/types";
 import { MEMBER, v2Completed, v2RootActive } from "../handoff/view.fixtures";
+import { DESIGN_ALL_ACTIONS_ID } from "../handoff/designCards";
 import { WorkspaceReadyScreen } from "./WorkspaceReadyScreen";
 
 const workspace = {
@@ -182,9 +183,9 @@ describe("request card UI", () => {
     expect(screen.queryByRole("button", { name: he.openFile })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.downloadAndOpen }));
     expect(openV2).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole("heading", { name: he.requestDetails })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "נא לאשר" })).not.toBeInTheDocument();
     fireEvent.click(document.querySelector(".fr-card-compact") as HTMLElement);
-    expect(screen.getByRole("heading", { name: he.requestDetails })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "נא לאשר" })).toBeInTheDocument();
   });
 
   it("keeps v1 and v2 actions on the details screen, not a list menu", () => {
@@ -207,10 +208,15 @@ describe("request card UI", () => {
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
+    expect(document.querySelector(".fr-command-list")).toBeFalsy();
     fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.actions })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.showHistory })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.hideHistory })).toBeInTheDocument();
+    expect(document.querySelector(".fr-action-drawer .fr-command-list")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(approve).toHaveBeenCalledTimes(1);
   });
@@ -252,5 +258,89 @@ describe("request card UI", () => {
     expect(document.querySelector(".fr-card-actor")).toBeFalsy();
     expect(document.querySelectorAll(".fr-actions .fr-btn-primary")).toHaveLength(0);
     document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("unlocks every action on the design preview card and opens each follow-up", () => {
+    const approve = vi.fn();
+    const reject = vi.fn();
+    const { record, transfers } = v2RootActive();
+    const preview = {
+      ...record,
+      id: DESIGN_ALL_ACTIONS_ID,
+      originalFilename: "בדיקת פעולות.docx",
+      instruction: "כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם",
+      activeTransferId: "hop-preview",
+    };
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        handoffs={[preview]}
+        transfers={transfers.map((hop) => ({
+          ...hop,
+          id: "hop-preview",
+          handoffId: DESIGN_ALL_ACTIONS_ID,
+          instruction: "כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם",
+        }))}
+        members={members}
+        onApprove={approve}
+        onReject={reject}
+        onRemind={() => undefined}
+        onCancelV2={() => undefined}
+        onAttachFileRequest={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByText("כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם"));
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.attachFile })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.sendReminder })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.cancelRequest })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: he.approve }));
+    expect(screen.getByRole("dialog", { name: he.approve })).toBeInTheDocument();
+    expect(document.querySelector(".fr-overlay .fr-dialog")).toBeFalsy();
+    expect(document.querySelector(".fr-detail-dock.fr-dock-open")).toBeTruthy();
+    expect(document.querySelector(".fr-detail-dock .fr-form-drawer")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+    expect(approve).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: he.reject }));
+    expect(screen.getByRole("dialog", { name: he.reject })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+    expect(reject).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: he.attachFile }));
+    expect(screen.getByRole("dialog", { name: he.attachFile })).toBeInTheDocument();
+    expect(screen.getByText(he.dropHint)).toBeInTheDocument();
+    expect(document.querySelector(".fr-dropzone .fr-icon")).toHaveAttribute(
+      "viewBox",
+      "0 0 20 20",
+    );
+    fireEvent.click(screen.getByRole("button", { name: he.browseFromExplorer }));
+    fireEvent.change(document.querySelector(".fr-file-input") as HTMLInputElement, {
+      target: { files: [new File(["ok"], "דוגמה.docx")] },
+    });
+    expect(screen.getByText("דוגמה.docx")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+
+    fireEvent.click(screen.getByRole("button", { name: he.cancelRequest }));
+    expect(screen.getByText(he.cancelRequestConfirm)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+
+    fireEvent.click(screen.getByRole("button", { name: he.requestRevision }));
+    expect(screen.getByRole("dialog", { name: he.requestRevision })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+
+    fireEvent.click(screen.getByRole("button", { name: he.sendReminder }));
+    expect(screen.getByText(he.sendReminderConfirm)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.sendReminder }));
+    expect(screen.getByText(he.reminderSent)).toBeInTheDocument();
   });
 });

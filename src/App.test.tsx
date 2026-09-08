@@ -894,7 +894,8 @@ describe("App cloud workspace flow", () => {
     );
     fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
     fireEvent.click(await screen.findByText("בדוק"));
-    fireEvent.click(await screen.findByRole("button", { name: he.acceptAndClose }));
+    fireEvent.click(await screen.findByRole("button", { name: he.actions }));
+    fireEvent.click(await screen.findByRole("button", { name: he.approve }));
     await waitFor(() => {
       expect(handoffService.completeCalls).toEqual(["handoff-1"]);
     });

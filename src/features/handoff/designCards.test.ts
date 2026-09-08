@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { he } from "../../copy/he";
 import { presentHandoffCard } from "./cardPresentation";
-import { buildDesignInbox, designPartnerMember, mergeDesignMembers } from "./designCards";
+import { buildDesignInbox, DESIGN_ALL_ACTIONS_ID, DESIGN_HISTORY_ICONS_ID, designPartnerMember, mergeDesignMembers } from "./designCards";
+import { historyIcon, visibleHistory } from "./history";
 import { projectHandoffList } from "./view";
 
 const ME = "member-me";
@@ -64,5 +65,43 @@ describe("design inbox catalog", () => {
       { ...designPartnerMember("workspace-1"), id: PARTNER },
     ]);
     expect(withLive.map((member) => member.id)).toEqual([ME, PARTNER]);
+  });
+
+  it("includes a dummy card with every history icon", () => {
+    const inbox = buildDesignInbox({
+      workspaceId: "workspace-1",
+      meId: ME,
+      partnerId: PARTNER,
+    });
+    const showcase = inbox.handoffs.find((row) => row.id === DESIGN_HISTORY_ICONS_ID);
+    expect(showcase).toBeTruthy();
+    const lines = visibleHistory(showcase!, { requestedAction: "approval" });
+    const icons = lines.map((line) => historyIcon(line.eventType));
+    expect(new Set(icons).size).toBe(icons.length);
+    expect(icons).toEqual([
+      "arrowUpload",
+      "open",
+      "document",
+      "arrowDownload",
+      "checkmarkCircle",
+      "checkmark",
+      "attach",
+      "mail",
+      "dismissCircle",
+      "arrowSync",
+      "mailInboxCheckmark",
+      "prohibited",
+      "errorCircle",
+    ]);
+    expect(lines.some((line) => line.versionNumber != null)).toBe(false);
+  });
+
+  it("includes a dummy card for previewing every action", () => {
+    const inbox = buildDesignInbox({
+      workspaceId: "workspace-1",
+      meId: ME,
+      partnerId: PARTNER,
+    });
+    expect(inbox.handoffs.some((row) => row.id === DESIGN_ALL_ACTIONS_ID)).toBe(true);
   });
 });

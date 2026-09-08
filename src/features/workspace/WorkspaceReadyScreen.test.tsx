@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { he, returnFileToLabel } from "../../copy/he";
+import { he } from "../../copy/he";
 import type { HandoffRecord } from "../handoff/types";
 import { MEMBER, v2OpenMissingPointer, v2RootActive } from "../handoff/view.fixtures";
 import { WorkspaceReadyScreen } from "./WorkspaceReadyScreen";
@@ -178,7 +178,8 @@ describe("WorkspaceReadyScreen", () => {
     );
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לבדוק"));
-    expect(screen.getByRole("button", { name: he.acceptAndClose })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
+    expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
   });
 
@@ -268,6 +269,7 @@ describe("WorkspaceReadyScreen", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     fireEvent.click(screen.getByText("נא לבדוק"));
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     fireEvent.click(screen.getByRole("button", { name: he.requestRevision }));
     fireEvent.click(screen.getByRole("button", { name: he.confirmRevision }));
     expect(onRequestRevision).not.toHaveBeenCalled();
@@ -309,7 +311,7 @@ describe("WorkspaceReadyScreen", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     expect(screen.getByText(he.syncingChanges)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: returnFileToLabel("מאור") })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: he.attachFile })).not.toBeInTheDocument();
 
     rerender(
       <WorkspaceReadyScreen
@@ -326,7 +328,8 @@ describe("WorkspaceReadyScreen", () => {
     );
 
     fireEvent.click(screen.getByText("נא לבדוק"));
-    expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
+    expect(screen.getByRole("button", { name: he.attachFile })).toBeEnabled();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
     expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
     expect(screen.queryByText(he.needUpdate)).not.toBeInTheDocument();
@@ -346,7 +349,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: returnFileToLabel("מאור") })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.attachFile })).toBeEnabled();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
   });
 
@@ -398,12 +401,12 @@ describe("WorkspaceReadyScreen", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryCompleted} 1` }));
     fireEvent.click(screen.getByText("נא לבדוק"));
-    fireEvent.click(screen.getByRole("button", { name: he.showHistory }));
     expect(screen.getByText(he.historySent)).toBeInTheDocument();
     expect(screen.getAllByText("נא לבדוק").length).toBeGreaterThan(0);
-    expect(screen.getByText("הוחזר · גרסה 3")).toBeInTheDocument();
+    expect(screen.getByText(he.historyReturned)).toBeInTheDocument();
     expect(screen.getByText("חסר החתימה")).toBeInTheDocument();
     expect(screen.getByText(he.historyCompleted)).toBeInTheDocument();
+    expect(screen.queryByText(/גרסה \d/)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/finalized|revision_requested|completed/);
   });
 
@@ -444,6 +447,7 @@ describe("WorkspaceReadyScreen", () => {
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.approveAndComplete })).not.toBeInTheDocument();

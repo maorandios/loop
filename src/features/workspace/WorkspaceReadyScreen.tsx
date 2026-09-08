@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FileName } from "../../components/FileName";
 import { LtrValue } from "../../components/LtrValue";
-import { he, returnFileToLabel } from "../../copy/he";
+import { he } from "../../copy/he";
 import { FluentIcon, type IconName } from "../../icons/fluent";
 import { formatRelativeTime } from "../../lib/dates";
 import { ThemeProvider, useTheme } from "../../theme/ThemeProvider";
 import { handoffRole } from "../handoff/buckets";
-import { visibleHistory } from "../handoff/history";
+import { historyIcon, visibleHistory } from "../handoff/history";
 import {
   EMPTY_INBOX_FILTER,
   isInboxFilterActive,
@@ -20,6 +20,7 @@ import {
 } from "../handoff/mailbox";
 import {
   buildDesignInbox,
+  DESIGN_ALL_ACTIONS_ID,
   mergeDesignMembers,
   shouldUseDesignCards,
   withDesignEmails,
@@ -29,19 +30,13 @@ import { projectHandoffList } from "../handoff/view";
 import { FilterPopover } from "./FilterPopover";
 import {
   canCancelV2,
-  canOpenV2,
   canRemind,
   cardRequestedAction,
-  isFileRequestWithoutVersion,
   recipientPrimaryAction,
   senderReturnActions,
   workingFileChanged,
 } from "../handoff/actions";
-import {
-  counterpartHandle,
-  presentHandoffCard,
-  resolveCardPrimary,
-} from "../handoff/cardPresentation";
+import { counterpartHandle, presentHandoffCard } from "../handoff/cardPresentation";
 import {
   INSTRUCTION_MAX,
   REVISION_NOTE_MAX,
@@ -60,7 +55,6 @@ import type {
   SendProgress,
   TransferRecord,
 } from "../handoff/types";
-import { latestHandoffVersion } from "../handoff/versions";
 import type { Workspace, WorkspaceMember } from "./types";
 
 type WorkspaceReadyScreenProps = {
@@ -151,14 +145,57 @@ function workingLocal(inbox: InboxLocalEntry[], handoffId: string): InboxLocalEn
   });
 }
 
-function btnClass(isPrimary: boolean, danger = false): string {
-  if (isPrimary) {
-    return "fr-btn fr-btn-primary";
-  }
-  if (danger) {
-    return "fr-btn fr-btn-danger-ghost";
-  }
-  return "fr-btn fr-btn-secondary";
+function CommandRow(props: {
+  icon: IconName;
+  label: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`fr-command-btn${props.danger ? " fr-command-btn-danger" : ""}`}
+      onClick={props.onClick}
+    >
+      <FluentIcon name={props.icon} size={16} />
+      {props.label}
+    </button>
+  );
+}
+
+function FormDrawer(props: {
+  titleId: string;
+  title: string;
+  icon: IconName;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="fr-form-drawer" role="dialog" aria-labelledby={props.titleId}>
+      <div className="fr-dialog-head">
+        <h2 id={props.titleId} className="fr-dialog-title">
+          <FluentIcon name={props.icon} size={18} />
+          {props.title}
+        </h2>
+        <button
+          type="button"
+          className="fr-drawer-back"
+          dir="ltr"
+          aria-label={he.backToMenu}
+          onClick={props.onClose}
+        >
+          <FluentIcon name="chevronLeft" />
+          {he.back}
+        </button>
+      </div>
+      {props.children}
+    </div>
+  );
+}
+
+function firstDroppedName(files: FileList | null | undefined): string | null {
+  const name = files?.[0]?.name?.trim();
+  return name ? name : null;
 }
 
 function motionDuration(ms: number): number {
@@ -334,7 +371,22 @@ function WorkspaceReadyView({
   const [resultNoteFor, setResultNoteFor] = useState<string | null>(null);
   const [resultNote, setResultNote] = useState("");
   const [resultNoteError, setResultNoteError] = useState<string | null>(null);
-  const [historyOpen, setHistoryOpen] = useState<string | null>(null);
+  const [historyCollapsed, setHistoryCollapsed] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [drawerLeaving, setDrawerLeaving] = useState(false);
+  const drawerLeavingRef = useRef(false);
+  const drawerMotionTimer = useRef(0);
+  const [panelLeaving, setPanelLeaving] = useState(false);
+  const [panelEnter, setPanelEnter] = useState(false);
+  const panelLeavingRef = useRef(false);
+  const panelMotionTimer = useRef(0);
+  const [designDialog, setDesignDialog] = useState<"approve" | "attach" | "remind" | "cancel" | null>(
+    null,
+  );
+  const [designNotice, setDesignNotice] = useState<string | null>(null);
+  const [designPickedName, setDesignPickedName] = useState<string | null>(null);
+  const [designDropActive, setDesignDropActive] = useState(false);
+  const designFileInputRef = useRef<HTMLInputElement | null>(null);
   const [revisionFor, setRevisionFor] = useState<string | null>(null);
   const [revisionNote, setRevisionNote] = useState("");
   const [revisionError, setRevisionError] = useState<string | null>(null);
@@ -370,18 +422,19 @@ function WorkspaceReadyView({
   const sending =
     sendProgress === "sending" || sendProgress === "uploading" || sendProgress === "finalizing";
   const bannerError = error ?? copyError;
+  const bannerStatus = reminderNotice ?? designNotice;
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       if (event.key !== "Escape") {
         return;
       }
-      if (resultNoteFor) {
-        setResultNoteFor(null);
+      if (designDialog || resultNoteFor || revisionFor) {
+        backToMenu();
         return;
       }
-      if (revisionFor) {
-        setRevisionFor(null);
+      if (actionsOpen) {
+        closeDrawer();
         return;
       }
       if (filterOpen) {
@@ -402,7 +455,16 @@ function WorkspaceReadyView({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [composeOpen, detailId, filterOpen, resultNoteFor, revisionFor, settingsOpen]);
+  }, [
+    actionsOpen,
+    composeOpen,
+    designDialog,
+    detailId,
+    filterOpen,
+    resultNoteFor,
+    revisionFor,
+    settingsOpen,
+  ]);
 
   useEffect(() => {
     if (detailId && !screenLeaving) {
@@ -560,11 +622,98 @@ function WorkspaceReadyView({
     }
     openedFromCard.current = from ?? null;
     openedFromId.current = id;
+    setActionsOpen(false);
+    setDrawerLeaving(false);
+    drawerLeavingRef.current = false;
+    window.clearTimeout(drawerMotionTimer.current);
+    drawerMotionTimer.current = 0;
+    window.clearTimeout(panelMotionTimer.current);
+    panelMotionTimer.current = 0;
+    setPanelLeaving(false);
+    panelLeavingRef.current = false;
+    setPanelEnter(false);
+    closeActionForm();
+    setHistoryCollapsed(null);
     setDetailId(id);
+  }
+
+  function closeActionForm() {
+    setDesignDialog(null);
+    setDesignDropActive(false);
+    setResultNoteFor(null);
+    setRevisionFor(null);
+  }
+
+  function afterPanelLeave(fn: () => void) {
+    const finish = () => {
+      panelMotionTimer.current = 0;
+      panelLeavingRef.current = false;
+      setPanelLeaving(false);
+      setPanelEnter(true);
+      fn();
+    };
+    if (motionDuration(180) === 0 || drawerLeavingRef.current) {
+      finish();
+      return;
+    }
+    if (panelLeavingRef.current) {
+      return;
+    }
+    panelLeavingRef.current = true;
+    setPanelLeaving(true);
+    window.clearTimeout(panelMotionTimer.current);
+    panelMotionTimer.current = window.setTimeout(finish, 180);
+  }
+
+  function backToMenu() {
+    afterPanelLeave(() => {
+      closeActionForm();
+      setActionsOpen(true);
+    });
+  }
+
+  function closeDrawer() {
+    const finish = () => {
+      drawerMotionTimer.current = 0;
+      drawerLeavingRef.current = false;
+      setDrawerLeaving(false);
+      panelLeavingRef.current = false;
+      setPanelLeaving(false);
+      setPanelEnter(false);
+      setActionsOpen(false);
+      closeActionForm();
+    };
+    window.clearTimeout(panelMotionTimer.current);
+    panelMotionTimer.current = 0;
+    panelLeavingRef.current = false;
+    setPanelLeaving(false);
+    if (motionDuration(260) === 0) {
+      finish();
+      return;
+    }
+    if (drawerLeavingRef.current) {
+      return;
+    }
+    drawerLeavingRef.current = true;
+    setDrawerLeaving(true);
+    window.clearTimeout(drawerMotionTimer.current);
+    drawerMotionTimer.current = window.setTimeout(finish, 260);
   }
 
   function closeDetail() {
     const finish = () => {
+      setActionsOpen(false);
+      setDrawerLeaving(false);
+      drawerLeavingRef.current = false;
+      window.clearTimeout(drawerMotionTimer.current);
+      drawerMotionTimer.current = 0;
+      window.clearTimeout(panelMotionTimer.current);
+      panelMotionTimer.current = 0;
+      setPanelLeaving(false);
+      panelLeavingRef.current = false;
+      setPanelEnter(false);
+      closeActionForm();
+      setHistoryCollapsed(null);
       setDetailId(null);
       setScreenLeaving(false);
     };
@@ -596,89 +745,96 @@ function WorkspaceReadyView({
     <main className="fr-shell">
       <header className="fr-header fr-sticky">
         <div className="fr-brand">
-          <span className="fr-brand-mark">
-            <FluentIcon name="document" size={16} />
+          <span className="fr-brand-mark" aria-hidden="true">
+            <FluentIcon name="drop" size={16} />
           </span>
-          <div className="fr-brand-text">
-            <div className="fr-brand-name">
-              <h1 className="fr-sheet-title" style={{ fontSize: 15 }}>
-                {he.appName}
-              </h1>
-            </div>
-          </div>
+          <h1 className="fr-app-title">{he.appName}</h1>
         </div>
         <div className="fr-header-tools">
-          {!waiting && onSubmitSend ? (
-            <button
-              type="button"
-              className="fr-icon-btn fr-icon-btn-accent"
-              aria-label={he.newRequest}
-              ref={composeTriggerRef}
-              onClick={() => {
-                setComposeOpen(true);
-              }}
-            >
-              <FluentIcon name="add" />
+          {detailCard ? (
+            <button type="button" className="fr-header-back" onClick={closeDetail}>
+              <FluentIcon name="chevronLeft" />
+              {he.back}
             </button>
-          ) : null}
-          {!detailCard && !settingsOpen ? (
-            <div className="fr-filter-wrap">
+          ) : (
+            <>
+              {!waiting && onSubmitSend ? (
+                <button
+                  type="button"
+                  className="fr-icon-btn fr-icon-btn-accent"
+                  aria-label={he.newRequest}
+                  ref={composeTriggerRef}
+                  onClick={() => {
+                    setComposeOpen(true);
+                  }}
+                >
+                  <FluentIcon name="add" />
+                </button>
+              ) : null}
+              {!settingsOpen ? (
+                <div className="fr-filter-wrap">
+                  <button
+                    type="button"
+                    className="fr-icon-btn"
+                    aria-label={he.filterRequests}
+                    aria-expanded={filterOpen}
+                    onClick={() => {
+                      setDraftFilter(extraFilter);
+                      setFilterOpen((open) => !open);
+                    }}
+                  >
+                    <FluentIcon name="filter" />
+                  </button>
+                  {isInboxFilterActive(extraFilter) ? <span className="fr-filter-dot" /> : null}
+                  {filterOpen ? (
+                    <FilterPopover
+                      filter={draftFilter}
+                      members={members}
+                      onChange={setDraftFilter}
+                      onApply={() => {
+                        setExtraFilter(draftFilter);
+                        setFilterOpen(false);
+                      }}
+                      onClear={() => {
+                        setDraftFilter(EMPTY_INBOX_FILTER);
+                        setExtraFilter(EMPTY_INBOX_FILTER);
+                        setFilterOpen(false);
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
               <button
                 type="button"
                 className="fr-icon-btn"
-                aria-label={he.filterRequests}
-                aria-expanded={filterOpen}
+                aria-label={he.settings}
+                ref={settingsTriggerRef}
                 onClick={() => {
-                  setDraftFilter(extraFilter);
-                  setFilterOpen((open) => !open);
+                  if (listScrollRef.current) {
+                    listScrollTop.current = listScrollRef.current.scrollTop;
+                  }
+                  setDetailId(null);
+                  setActionsOpen(false);
+                  setDrawerLeaving(false);
+                  drawerLeavingRef.current = false;
+                  setHistoryCollapsed(null);
+                  setSettingsOpen(true);
                 }}
               >
-                <FluentIcon name="filter" />
+                <FluentIcon name="settings" />
               </button>
-              {isInboxFilterActive(extraFilter) ? <span className="fr-filter-dot" /> : null}
-              {filterOpen ? (
-                <FilterPopover
-                  filter={draftFilter}
-                  members={members}
-                  onChange={setDraftFilter}
-                  onApply={() => {
-                    setExtraFilter(draftFilter);
-                    setFilterOpen(false);
-                  }}
-                  onClear={() => {
-                    setDraftFilter(EMPTY_INBOX_FILTER);
-                    setExtraFilter(EMPTY_INBOX_FILTER);
-                    setFilterOpen(false);
-                  }}
-                />
-              ) : null}
-            </div>
-          ) : null}
-          <button
-            type="button"
-            className="fr-icon-btn"
-            aria-label={he.settings}
-            ref={settingsTriggerRef}
-            onClick={() => {
-              if (listScrollRef.current) {
-                listScrollTop.current = listScrollRef.current.scrollTop;
-              }
-              setDetailId(null);
-              setSettingsOpen(true);
-            }}
-          >
-            <FluentIcon name="settings" />
-          </button>
+            </>
+          )}
         </div>
       </header>
 
       <div className="fr-main">
-        {bannerError || reminderNotice ? (
+        {bannerError || bannerStatus ? (
           <div
             role={bannerError ? "alert" : "status"}
             className={`fr-banner${bannerError ? " fr-banner-error" : ""}`}
           >
-            <p>{bannerError ?? reminderNotice}</p>
+            <p>{bannerError ?? bannerStatus}</p>
           </div>
         ) : null}
 
@@ -827,22 +983,7 @@ function WorkspaceReadyView({
 
         {!settingsOpen ? (
         <div className={detailCard ? `fr-screen${screenLeaving ? " fr-leaving" : " fr-screen-in"}` : "fr-list-in"}>
-        {detailCard ? (
-          <div className="fr-page-head">
-            <button
-              type="button"
-              className="fr-icon-btn"
-              aria-label={he.back}
-              onClick={closeDetail}
-            >
-              <FluentIcon name="chevronLeft" rtlFlip />
-            </button>
-            <h2 ref={detailTitleRef} tabIndex={-1}>
-              {he.requestDetails}
-            </h2>
-            <span style={{ width: 36 }} />
-          </div>
-        ) : (
+        {detailCard ? null : (
           <div className="fr-nav-block">
             <div role="tablist" className="fr-seg">
               {TABS.map((tab) => (
@@ -883,10 +1024,10 @@ function WorkspaceReadyView({
               ? [{ key: "detail", cards: [{ key: detailCard.id, card: detailCard }] }]
               : [{ key: primaryView, cards: visibleItems }]
             ).map((group) => (
-              <div key={group.key} className={detailCard ? undefined : "fr-list-swap"}>
+              <div key={group.key} className={detailCard ? "fr-detail-pane" : "fr-list-swap"}>
                 <div
                   key={detailCard ? "detail" : primaryView}
-                  className={detailCard ? undefined : "fr-list-filter"}
+                  className={detailCard ? "fr-detail-pane-inner" : "fr-list-filter"}
                 >
                 {group.cards.map((item) => {
               const card = item.card;
@@ -895,8 +1036,6 @@ function WorkspaceReadyView({
               const role = isLegacy ? handoffRole(handoff, currentMemberId) : null;
               const local = workingLocal(inbox, handoff.id);
               const already = Boolean(local);
-              const sender = memberName(members, handoff.senderMemberId);
-              const latest = latestHandoffVersion(handoff);
               const differs = local?.contentDiffersFromV1 === true;
               const pendingSync = local?.pendingStatusSync === true;
               const busy = reconciling.has(handoff.id);
@@ -928,6 +1067,7 @@ function WorkspaceReadyView({
               });
               const localWork = localStates[handoff.id] ?? "idle";
               const v2Source = card.source.kind === "transfer" ? card.source : null;
+              const designAllActions = handoff.id === DESIGN_ALL_ACTIONS_ID;
               const v2Busy =
                 actionBusyId === handoff.id ||
                 localWork === "sending" ||
@@ -943,50 +1083,131 @@ function WorkspaceReadyView({
                 v2Source && currentMemberId
                   ? senderReturnActions(v2Source, currentMemberId)
                   : { accept: false, revision: false, fileRequestWording: false };
-              const showOpenV2 = Boolean(
-                v2Source && currentMemberId && onOpenV2 && canOpenV2(v2Source, currentMemberId),
-              );
               const showRemind = Boolean(
-                v2Source && currentMemberId && onRemind && canRemind(v2Source, currentMemberId),
+                designAllActions ||
+                  (v2Source && currentMemberId && onRemind && canRemind(v2Source, currentMemberId)),
               );
               const showCancel = Boolean(
-                v2Source && currentMemberId && onCancelV2 && canCancelV2(v2Source, currentMemberId),
+                designAllActions ||
+                  (v2Source && currentMemberId && onCancelV2 && canCancelV2(v2Source, currentMemberId)),
               );
-              const fileRequestPending = Boolean(v2Source && isFileRequestWithoutVersion(v2Source));
               const changed = workingFileChanged(inbox, handoff.id);
-              const historyShown = historyOpen === handoff.id;
+              const historyShown = historyCollapsed !== handoff.id;
               const revisionOpen = revisionFor === handoff.id;
-              const compact = !detailCard;
-              const visualPrimary =
-                localWork === "retry" || localWork === "offline"
-                  ? "retry"
+              const actionFormOpen =
+                resultNoteFor === handoff.id || revisionOpen || Boolean(designDialog);
+              const drawerShown = actionsOpen || actionFormOpen || drawerLeaving;
+              const dockPanelKey =
+                resultNoteFor === handoff.id
+                  ? "reject"
+                  : revisionOpen
+                    ? "revision"
+                    : (designDialog ?? "menu");
+              const rejectFormTitle = designAllActions
+                ? he.reject
+                : primary === "update"
+                  ? he.replyLabel
                   : primary === "attach"
+                    ? he.rejectReasonLabel
+                    : he.optionalNoteLabel;
+              const designFormTitle =
+                designDialog === "approve"
+                  ? he.approve
+                  : designDialog === "attach"
+                    ? he.attachFile
+                    : designDialog === "remind"
+                      ? he.sendReminder
+                      : he.cancelRequest;
+              const designFormIcon: IconName =
+                designDialog === "approve"
+                  ? "checkmarkCircle"
+                  : designDialog === "attach"
                     ? "attach"
-                    : primary === "approve"
-                      ? "approve"
-                      : primary === "review"
-                        ? "review"
-                        : primary === "update"
-                          ? "update"
-                          : senderActs.accept
-                            ? "accept"
-                            : showOpenV2 && !fileRequestPending
-                              ? "openV2"
-                              : isLegacy &&
-                                  role === "recipient" &&
-                                  handoff.status !== "completed" &&
-                                  handoff.status !== "return_received"
-                                ? "openLegacyIn"
-                                : isLegacy && canReturn
-                                  ? "return"
-                                  : isLegacy && role === "sender" && handoff.status === "returned"
-                                    ? "complete"
-                                    : "";
-              const showLegacyOpenIn =
-                isLegacy &&
-                role === "recipient" &&
-                handoff.status !== "completed" &&
-                handoff.status !== "return_received";
+                    : designDialog === "remind"
+                      ? "alert"
+                      : "prohibited";
+              const confirmActionForm = (): boolean => {
+                if (resultNoteFor === handoff.id) {
+                  if (designAllActions) {
+                    return true;
+                  }
+                  const trimmed = resultNote.trim();
+                  const needsNote =
+                    primary === "attach" ||
+                    primary === "approve" ||
+                    primary === "review" ||
+                    (primary === "update" && !changed);
+                  if (needsNote && !trimmed) {
+                    setResultNoteError(
+                      primary === "update" ? he.replyRequired : he.resultNoteRequired,
+                    );
+                    return false;
+                  }
+                  if (trimmed.length > REVISION_NOTE_MAX) {
+                    setResultNoteError(he.revisionNoteTooLong);
+                    return false;
+                  }
+                  setResultNoteError(null);
+                  if (primary === "attach") {
+                    void onCannotProvide?.(handoff, trimmed);
+                  } else if (primary === "update") {
+                    void onReturnUpdate?.(handoff, trimmed);
+                  } else {
+                    void onReject?.(handoff, trimmed);
+                  }
+                  return true;
+                }
+                if (revisionOpen) {
+                  if (designAllActions) {
+                    return true;
+                  }
+                  const problem = validateRevisionNote(revisionNote);
+                  if (problem === "revision_note_required") {
+                    setRevisionError(he.cloudError.revision_note_required);
+                    return false;
+                  }
+                  if (problem === "revision_note_too_long") {
+                    setRevisionError(he.revisionNoteTooLong);
+                    return false;
+                  }
+                  setRevisionError(null);
+                  if (v2Source) {
+                    void onRevisionV2?.(handoff, revisionNote.trim());
+                  } else {
+                    void onRequestRevision?.(handoff, revisionNote.trim());
+                  }
+                  return true;
+                }
+                if (designDialog === "remind") {
+                  setDesignNotice(he.reminderSent);
+                }
+                return true;
+              };
+              const dockPrimaryLabel = resultNoteFor === handoff.id
+                ? primary === "attach"
+                  ? he.cannotProvide
+                  : primary === "update"
+                    ? he.returnUpdate
+                    : he.reject
+                : revisionOpen
+                  ? he.confirmRevision
+                  : designDialog
+                    ? designFormTitle
+                    : he.actions;
+              const dockPrimaryDanger = Boolean(
+                (resultNoteFor === handoff.id && (designAllActions || primary === "attach")) ||
+                  designDialog === "cancel",
+              );
+              const dockPrimaryIcon: IconName = resultNoteFor === handoff.id
+                ? primary === "update"
+                  ? "arrowSync"
+                  : "dismissCircle"
+                : revisionOpen
+                  ? "arrowSync"
+                  : designDialog
+                    ? designFormIcon
+                    : "arrowJoin";
+              const compact = !detailCard;
               const showLegacyOpenOut =
                 isLegacy &&
                 ((role === "sender" &&
@@ -1004,24 +1225,11 @@ function WorkspaceReadyView({
                   emailOf: (id) => memberEmail(members, id),
                 },
               );
-              const primaryKind = resolveCardPrimary({
-                section: card.section,
-                localWork,
-                fileRequestPending,
-                senderAccept: senderActs.accept,
-                hasOpenableFile: Boolean(
-                  (card.latestVersionNumber && card.latestVersionNumber > 0) ||
-                    showOpenV2 ||
-                    showLegacyOpenOut ||
-                    latest,
-                ),
-                showOpen: Boolean(showOpenV2 || showLegacyOpenIn),
-                canReturn: Boolean(isLegacy && canReturn && onReturnFile),
-                legacyReturnedSender: Boolean(
-                  isLegacy && role === "sender" && handoff.status === "returned",
-                ),
-              });
               const handle = counterpartHandle(presented.counterpart);
+              const senderName = presented.people.senderName;
+              const senderEmail = memberEmail(members, presented.people.senderId);
+              const detailTitle =
+                presented.title ?? presented.subjectText ?? presented.headline;
               const canDownloadFile = Boolean(
                 presented.subjectText && (onOpenV2 || onDownloadAndOpen || onOpenLatest),
               );
@@ -1036,11 +1244,228 @@ function WorkspaceReadyView({
                 }
                 void onDownloadAndOpen?.(handoff);
               };
+              const commandBusy = v2Busy || returning;
+              const canApproveAction = Boolean(
+                designAllActions ||
+                  (primary === "approve" && onApprove) ||
+                  (primary === "review" && onFinishReview) ||
+                  (senderActs.accept && onAcceptV2) ||
+                  (isLegacy && role === "sender" && handoff.status === "returned" && onCompleteHandoff),
+              );
+              const canRejectAction = Boolean(
+                designAllActions ||
+                  ((primary === "approve" || primary === "review" || primary === "update") &&
+                    onReject) ||
+                  (primary === "attach" && onCannotProvide),
+              );
+              const canAttachAction = Boolean(
+                designAllActions ||
+                  (primary === "attach" && onAttachFileRequest) ||
+                  (primary === "update" && onReturnUpdate) ||
+                  (isLegacy && canReturn && onReturnFile),
+              );
+              const canRevisionAction = Boolean(
+                designAllActions ||
+                  senderActs.revision ||
+                  (isLegacy && role === "sender" && handoff.status === "returned"),
+              );
+              const showRetry = localWork === "retry" || localWork === "offline";
+              const showReselect = localWork === "waiting_reselect";
+              const showAbort = localWork !== "idle" && Boolean(onAbortLocal);
+              const runCardAction = (run: () => boolean | void, stayOpen = false) => {
+                if (stayOpen) {
+                  afterPanelLeave(() => {
+                    run();
+                  });
+                  return;
+                }
+                if (run() === false) {
+                  return;
+                }
+                closeDrawer();
+              };
+              const cardCommands = compact
+                ? []
+                : [
+                    ...(showRetry
+                      ? [
+                          {
+                            icon: "arrowSync" as const,
+                            label: he.tryAgain,
+                            stayOpen: false,
+                            run: () => {
+                              void onRetryLocal?.(handoff.id);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(showReselect
+                      ? [
+                          {
+                            icon: "document" as const,
+                            label: he.chooseFile,
+                            stayOpen: false,
+                            run: () => {
+                              void onRestoreSnapshot?.(handoff.id);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(showAbort
+                      ? [
+                          {
+                            icon: "dismiss" as const,
+                            label: he.abortAttempt,
+                            danger: true,
+                            stayOpen: false,
+                            run: () => {
+                              void onAbortLocal?.(handoff.id);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && canApproveAction
+                      ? [
+                          {
+                            icon: "checkmarkCircle" as const,
+                            label: he.approve,
+                            stayOpen: designAllActions,
+                            run: () => {
+                              if (designAllActions) {
+                                setResultNote("");
+                                setResultNoteError(null);
+                                setDesignDialog("approve");
+                                return;
+                              }
+                              if (primary === "approve" && onApprove) {
+                                if (changed && !window.confirm(he.fileChangedConfirm)) {
+                                  return false;
+                                }
+                                void onApprove(
+                                  handoff,
+                                  resultNoteFor === handoff.id ? resultNote.trim() || null : null,
+                                );
+                                return;
+                              }
+                              if (primary === "review" && onFinishReview) {
+                                void onFinishReview(
+                                  handoff,
+                                  resultNoteFor === handoff.id ? resultNote.trim() || null : null,
+                                );
+                                return;
+                              }
+                              if (senderActs.accept && onAcceptV2) {
+                                void onAcceptV2(handoff);
+                                return;
+                              }
+                              void onCompleteHandoff?.(handoff);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && canRejectAction
+                      ? [
+                          {
+                            icon: "dismissCircle" as const,
+                            label: he.reject,
+                            danger: true,
+                            stayOpen: true,
+                            run: () => {
+                              setResultNoteFor(handoff.id);
+                              setResultNote("");
+                              setResultNoteError(null);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && canAttachAction
+                      ? [
+                          {
+                            icon: "attach" as const,
+                            label: he.attachFile,
+                            stayOpen:
+                              designAllActions || Boolean(primary === "update" && !changed),
+                            run: () => {
+                              if (designAllActions) {
+                                setDesignPickedName(null);
+                                setDesignDropActive(false);
+                                setDesignDialog("attach");
+                                return;
+                              }
+                              if (primary === "attach" && onAttachFileRequest) {
+                                void onAttachFileRequest(handoff);
+                                return;
+                              }
+                              if (primary === "update" && onReturnUpdate) {
+                                if (!changed) {
+                                  setResultNoteFor(handoff.id);
+                                  setResultNoteError(null);
+                                  return;
+                                }
+                                void onReturnUpdate(
+                                  handoff,
+                                  resultNoteFor === handoff.id ? resultNote.trim() || null : null,
+                                );
+                                return;
+                              }
+                              void onReturnFile?.(handoff);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && showRemind
+                      ? [
+                          {
+                            icon: "alert" as const,
+                            label: he.sendReminder,
+                            stayOpen: designAllActions,
+                            run: () => {
+                              if (designAllActions) {
+                                setDesignDialog("remind");
+                                return;
+                              }
+                              void onRemind?.(handoff);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && showCancel
+                      ? [
+                          {
+                            icon: "prohibited" as const,
+                            label: he.cancelRequest,
+                            danger: true,
+                            stayOpen: designAllActions,
+                            run: () => {
+                              if (designAllActions) {
+                                setDesignDialog("cancel");
+                                return;
+                              }
+                              void onCancelV2?.(handoff);
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(!commandBusy && canRevisionAction
+                      ? [
+                          {
+                            icon: "arrowSync" as const,
+                            label: he.requestRevision,
+                            stayOpen: true,
+                            run: () => {
+                              setRevisionFor(handoff.id);
+                              setRevisionNote("");
+                              setRevisionError(null);
+                            },
+                          },
+                        ]
+                      : []),
+                  ];
               return (
+                <div key={item.key} className={compact ? undefined : "fr-detail-stack"}>
                 <article
-                  key={item.key}
                   data-handoff-id={handoff.id}
-                  className={`fr-card${compact ? " fr-card-compact" : ""}${presented.settled ? " fr-card-settled" : ""}`}
+                  className={`fr-card${compact ? " fr-card-compact" : " fr-card-detail"}${compact && presented.settled ? " fr-card-settled" : ""}`}
                   tabIndex={compact ? 0 : undefined}
                   onClick={(event) => {
                     if (detailCard) {
@@ -1072,7 +1497,7 @@ function WorkspaceReadyView({
                       {formatRelativeTime(new Date(card.lastActivityAt))}
                     </span>
                   </div>
-                  {handle || presented.title ? (
+                  {compact && (handle || presented.title) ? (
                     <div className="fr-sentence">
                       {handle ? (
                         <>
@@ -1098,7 +1523,32 @@ function WorkspaceReadyView({
                       ) : null}
                     </div>
                   ) : null}
-                  {presented.dueLabel ? (
+                  {!compact ? (
+                    <>
+                      <h2 ref={detailTitleRef} tabIndex={-1} className="fr-detail-title">
+                        <span dir="auto">{detailTitle}</span>
+                      </h2>
+                      <div className="fr-detail-from">
+                        {senderName ? (
+                          <div className="fr-detail-from-row">
+                            <span dir="auto">@{senderName}</span>
+                          </div>
+                        ) : null}
+                        {senderEmail ? (
+                          <div className="fr-detail-from-row">
+                            <FluentIcon name="mail" size={14} />
+                            <span dir="ltr">{senderEmail}</span>
+                          </div>
+                        ) : null}
+                        {presented.dueLabel ? (
+                          <div className="fr-detail-from-row">
+                            <FluentIcon name="calendar" size={14} />
+                            <span>{presented.dueLabel}</span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </>
+                  ) : presented.dueLabel ? (
                     <div className="fr-meta-row">
                       <span>
                         <FluentIcon name="calendar" size={14} />
@@ -1135,270 +1585,6 @@ function WorkspaceReadyView({
                   ) : showSyncing ? (
                     <div className="fr-progress">{he.syncingChanges}</div>
                   ) : null}
-                  {!compact ? (
-                  <div className="fr-actions">
-                    {!compact && showLegacyOpenIn ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "openLegacyIn")}
-                        disabled={returning || downloadingId === handoff.id || !onDownloadAndOpen}
-                        onClick={() => {
-                          void onDownloadAndOpen?.(handoff);
-                        }}
-                      >
-                        {already ? he.open : he.openAndHandle}
-                      </button>
-                    ) : null}
-                    {!compact && showLegacyOpenOut ? (
-                      <button
-                        type="button"
-                        className={btnClass(false)}
-                        disabled={returning || downloadingId === handoff.id || !onOpenLatest}
-                        onClick={() => {
-                          void onOpenLatest?.(handoff);
-                        }}
-                      >
-                        {card.section === "done" ? he.openFile : already ? he.open : he.openToReview}
-                      </button>
-                    ) : null}
-                    {!compact && isLegacy && canReturn && onReturnFile ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "return")}
-                        disabled={returning}
-                        onClick={() => {
-                          void onReturnFile(handoff);
-                        }}
-                      >
-                        {returnFileToLabel(sender)}
-                      </button>
-                    ) : null}
-                    {!compact && v2Source && showOpenV2 && !fileRequestPending ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "openV2")}
-                        disabled={v2Busy || downloadingId === handoff.id}
-                        onClick={() => {
-                          void onOpenV2?.(handoff);
-                        }}
-                      >
-                        {card.section === "done"
-                          ? he.openFile
-                          : already
-                            ? he.open
-                            : senderActs.accept
-                              ? he.openToReview
-                              : he.openAndHandle}
-                      </button>
-                    ) : null}
-                    {!compact && primary === "approve" && onApprove ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "approve")}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          if (changed && !window.confirm(he.fileChangedConfirm)) {
-                            return;
-                          }
-                          void onApprove(
-                            handoff,
-                            resultNoteFor === handoff.id ? resultNote.trim() || null : null,
-                          );
-                        }}
-                      >
-                        {he.approve}
-                      </button>
-                    ) : null}
-                    {!compact && primary === "review" && onFinishReview ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "review")}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          void onFinishReview(
-                            handoff,
-                            resultNoteFor === handoff.id ? resultNote.trim() || null : null,
-                          );
-                        }}
-                      >
-                        {he.finishReview}
-                      </button>
-                    ) : null}
-                    {!compact && primary === "update" && onReturnUpdate ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "update")}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          if (!changed) {
-                            setResultNoteFor(handoff.id);
-                            setResultNoteError(null);
-                            return;
-                          }
-                          void onReturnUpdate(
-                            handoff,
-                            resultNoteFor === handoff.id ? resultNote.trim() || null : null,
-                          );
-                        }}
-                      >
-                        {he.returnUpdate}
-                      </button>
-                    ) : null}
-                    {!compact &&
-                    (primary === "approve" || primary === "review" || primary === "update") &&
-                    onReject ? (
-                      <button
-                        type="button"
-                        className={btnClass(false, true)}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          setResultNoteFor(handoff.id);
-                          setResultNote("");
-                          setResultNoteError(null);
-                        }}
-                      >
-                        {he.reject}
-                      </button>
-                    ) : null}
-                    {!compact && primary === "attach" && onAttachFileRequest ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "attach")}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          void onAttachFileRequest(handoff);
-                        }}
-                      >
-                        {he.attachFile}
-                      </button>
-                    ) : null}
-                    {!compact && primary === "attach" && onCannotProvide ? (
-                      <button
-                        type="button"
-                        className={btnClass(false, true)}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          setResultNoteFor(handoff.id);
-                          setResultNote("");
-                          setResultNoteError(null);
-                        }}
-                      >
-                        {he.cannotProvide}
-                      </button>
-                    ) : null}
-                    {!compact && senderActs.accept && onAcceptV2 ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "accept")}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          void onAcceptV2(handoff);
-                        }}
-                      >
-                        {he.acceptAndClose}
-                      </button>
-                    ) : null}
-                    {!compact && senderActs.revision ? (
-                      <button
-                        type="button"
-                        className={btnClass(false)}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          setRevisionFor(handoff.id);
-                          setRevisionNote("");
-                          setRevisionError(null);
-                        }}
-                      >
-                        {senderActs.fileRequestWording ? he.requestOtherFile : he.requestRevision}
-                      </button>
-                    ) : null}
-                    {!compact && (localWork === "retry" || localWork === "offline") ? (
-                      <button
-                        type="button"
-                        className={btnClass(visualPrimary === "retry")}
-                        onClick={() => {
-                          void onRetryLocal?.(handoff.id);
-                        }}
-                      >
-                        {he.tryAgain}
-                      </button>
-                    ) : null}
-                    {!compact && localWork === "waiting_reselect" ? (
-                      <button
-                        type="button"
-                        className={btnClass(true)}
-                        onClick={() => {
-                          void onRestoreSnapshot?.(handoff.id);
-                        }}
-                      >
-                        {he.chooseFile}
-                      </button>
-                    ) : null}
-                    {localWork !== "idle" && onAbortLocal ? (
-                      <button
-                        type="button"
-                        className={btnClass(false, true)}
-                        onClick={() => {
-                          void onAbortLocal(handoff.id);
-                        }}
-                      >
-                        {he.abortAttempt}
-                      </button>
-                    ) : null}
-                    {!compact && isLegacy && role === "sender" && handoff.status === "returned" ? (
-                      <>
-                        <button
-                          type="button"
-                          className={btnClass(visualPrimary === "complete")}
-                          disabled={returning || !onCompleteHandoff}
-                          onClick={() => {
-                            void onCompleteHandoff?.(handoff);
-                          }}
-                        >
-                          {he.acceptAndClose}
-                        </button>
-                        {!compact ? (
-                          <button
-                            type="button"
-                            className={btnClass(false)}
-                            disabled={returning}
-                            onClick={() => {
-                              setRevisionFor(handoff.id);
-                              setRevisionNote("");
-                              setRevisionError(null);
-                            }}
-                          >
-                            {he.requestRevision}
-                          </button>
-                        ) : null}
-                      </>
-                    ) : null}
-                    {!compact && showRemind ? (
-                      <button
-                        type="button"
-                        className={btnClass(false)}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          void onRemind?.(handoff);
-                        }}
-                      >
-                        {he.sendReminder}
-                      </button>
-                    ) : null}
-                    {!compact && showCancel ? (
-                      <button
-                        type="button"
-                        className={btnClass(false, true)}
-                        disabled={v2Busy}
-                        onClick={() => {
-                          void onCancelV2?.(handoff);
-                        }}
-                      >
-                        {he.cancelRequest}
-                      </button>
-                    ) : null}
-                  </div>
-                  ) : null}
                   {presented.subjectText ? (
                     canDownloadFile ? (
                       <button
@@ -1424,187 +1610,25 @@ function WorkspaceReadyView({
                       </div>
                     )
                   ) : null}
-                  {resultNoteFor === handoff.id ? (
-                    <div className="fr-overlay" role="presentation">
-                      <div className="fr-dialog" role="dialog" aria-modal="true">
-                        <div className="fr-dialog-head">
-                          <h2 className="fr-dialog-title">
-                            {primary === "update"
-                              ? he.replyLabel
-                              : primary === "attach"
-                                ? he.rejectReasonLabel
-                                : he.optionalNoteLabel}
-                          </h2>
-                          <button
-                            type="button"
-                            className="fr-icon-btn"
-                            aria-label={he.closeDialog}
-                            onClick={() => {
-                              setResultNoteFor(null);
-                            }}
-                          >
-                            <FluentIcon name="dismiss" />
-                          </button>
-                        </div>
-                        <label className="fr-field-wrap">
-                          <span className="fr-label">
-                            {primary === "update"
-                              ? he.replyLabel
-                              : primary === "attach"
-                                ? he.rejectReasonLabel
-                                : he.optionalNoteLabel}
-                          </span>
-                          <textarea
-                            className="fr-area"
-                            maxLength={REVISION_NOTE_MAX}
-                            value={resultNote}
-                            onChange={(event) => {
-                              setResultNote(event.target.value);
-                            }}
-                          />
-                        </label>
-                        {resultNoteError ? (
-                          <p role="alert" className="fr-field-error">
-                            {resultNoteError}
-                          </p>
-                        ) : null}
-                        <div className="fr-sheet-actions">
-                          <button
-                            type="button"
-                            className="fr-btn fr-btn-secondary"
-                            onClick={() => {
-                              setResultNoteFor(null);
-                            }}
-                          >
-                            {he.cancel}
-                          </button>
-                          <button
-                            type="button"
-                            className={
-                              primary === "attach" ? "fr-btn fr-btn-danger" : "fr-btn fr-btn-primary"
-                            }
-                            onClick={() => {
-                              const trimmed = resultNote.trim();
-                              const needsNote =
-                                primary === "attach" ||
-                                primary === "approve" ||
-                                primary === "review" ||
-                                (primary === "update" && !changed);
-                              if (needsNote && !trimmed) {
-                                setResultNoteError(
-                                  primary === "update" ? he.replyRequired : he.resultNoteRequired,
-                                );
-                                return;
-                              }
-                              if (trimmed.length > REVISION_NOTE_MAX) {
-                                setResultNoteError(he.revisionNoteTooLong);
-                                return;
-                              }
-                              setResultNoteError(null);
-                              if (primary === "attach") {
-                                void onCannotProvide?.(handoff, trimmed);
-                              } else if (primary === "update") {
-                                void onReturnUpdate?.(handoff, trimmed);
-                              } else {
-                                void onReject?.(handoff, trimmed);
-                              }
-                              setResultNoteFor(null);
-                            }}
-                          >
-                            {primary === "attach"
-                              ? he.cannotProvide
-                              : primary === "update"
-                                ? he.returnUpdate
-                                : he.reject}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                  {revisionOpen ? (
-                    <div className="fr-overlay" role="presentation">
-                      <div className="fr-dialog" role="dialog" aria-modal="true">
-                        <div className="fr-dialog-head">
-                          <h2 className="fr-dialog-title">{he.requestRevision}</h2>
-                          <button
-                            type="button"
-                            className="fr-icon-btn"
-                            aria-label={he.closeDialog}
-                            onClick={() => {
-                              setRevisionFor(null);
-                            }}
-                          >
-                            <FluentIcon name="dismiss" />
-                          </button>
-                        </div>
-                        <p className="fr-dialog-body">{he.revisionNoteLabel}</p>
-                        <label className="fr-field-wrap">
-                          <span className="fr-label">{he.revisionNoteLabel}</span>
-                          <textarea
-                            className="fr-area"
-                            maxLength={REVISION_NOTE_MAX}
-                            value={revisionNote}
-                            onChange={(event) => {
-                              setRevisionNote(event.target.value);
-                            }}
-                          />
-                        </label>
-                        {revisionError ? (
-                          <p role="alert" className="fr-field-error">
-                            {revisionError}
-                          </p>
-                        ) : null}
-                        <div className="fr-sheet-actions">
-                          <button
-                            type="button"
-                            className="fr-btn fr-btn-secondary"
-                            onClick={() => {
-                              setRevisionFor(null);
-                            }}
-                          >
-                            {he.cancel}
-                          </button>
-                          <button
-                            type="button"
-                            className="fr-btn fr-btn-primary"
-                            onClick={() => {
-                              const problem = validateRevisionNote(revisionNote);
-                              if (problem === "revision_note_required") {
-                                setRevisionError(he.cloudError.revision_note_required);
-                                return;
-                              }
-                              if (problem === "revision_note_too_long") {
-                                setRevisionError(he.revisionNoteTooLong);
-                                return;
-                              }
-                              setRevisionError(null);
-                              if (v2Source) {
-                                void onRevisionV2?.(handoff, revisionNote.trim());
-                              } else {
-                                void onRequestRevision?.(handoff, revisionNote.trim());
-                              }
-                              setRevisionFor(null);
-                            }}
-                          >
-                            {he.confirmRevision}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
                   {detailCard ? (
                     <>
-                      <button
-                        type="button"
-                        className="fr-history-link"
-                        aria-expanded={historyShown}
-                        onClick={() => {
-                          setHistoryOpen(historyShown ? null : handoff.id);
-                        }}
-                      >
-                        <FluentIcon name="chevronDown" />
-                        {historyShown ? he.hideHistory : he.showHistory}
-                      </button>
+                      <div className="fr-activity-head">
+                        <span className="fr-activity-label">
+                          <FluentIcon name="timeline" size={16} />
+                          {he.activity}
+                        </span>
+                        <button
+                          type="button"
+                          className="fr-icon-btn"
+                          aria-expanded={historyShown}
+                          aria-label={historyShown ? he.hideHistory : he.showHistory}
+                          onClick={() => {
+                            setHistoryCollapsed(historyShown ? handoff.id : null);
+                          }}
+                        >
+                          <FluentIcon name="chevronDown" />
+                        </button>
+                      </div>
                       <div className={`fr-history-fold${historyShown ? " fr-open" : ""}`}>
                         <ol className="fr-history">
                           {history.map((line, index) => (
@@ -1613,7 +1637,7 @@ function WorkspaceReadyView({
                               className="fr-history-item"
                             >
                               <span className="fr-history-icon">
-                                <FluentIcon name="history" />
+                                <FluentIcon name={historyIcon(line.eventType)} />
                               </span>
                               <div className="fr-history-title">{line.title}</div>
                               {line.detail ? (
@@ -1626,9 +1650,6 @@ function WorkspaceReadyView({
                                 {line.createdAt
                                   ? ` · ${formatRelativeTime(new Date(line.createdAt))}`
                                   : ""}
-                                {typeof line.versionNumber === "number"
-                                  ? ` · ${he.latestVersionLabel.replace("{version}", String(line.versionNumber))}`
-                                  : ""}
                               </div>
                             </li>
                           ))}
@@ -1637,6 +1658,218 @@ function WorkspaceReadyView({
                     </>
                   ) : null}
                 </article>
+                  {!compact && drawerShown ? (
+                    <div
+                      className={`fr-drawer-scrim${drawerLeaving ? " fr-leaving" : ""}`}
+                      role="presentation"
+                      onClick={() => {
+                        closeDrawer();
+                      }}
+                    />
+                  ) : null}
+                  {!compact && cardCommands.length > 0 ? (
+                    <div
+                      className={`fr-detail-dock${drawerShown ? " fr-dock-open" : ""}${drawerLeaving ? " fr-leaving" : ""}`}
+                    >
+                      {drawerShown ? (
+                        <div className="fr-dock-sheet">
+                          <div className="fr-dock-handle" aria-hidden="true" />
+                          <div
+                            className={`fr-dock-panel${panelEnter ? " fr-panel-enter" : ""}${panelLeaving ? " fr-panel-leaving" : ""}`}
+                            key={dockPanelKey}
+                          >
+                      {resultNoteFor === handoff.id ? (
+                        <FormDrawer
+                          titleId="result-note-title"
+                          title={rejectFormTitle}
+                          icon={
+                            primary === "update" ? "arrowSync" : "dismissCircle"
+                          }
+                          onClose={backToMenu}
+                        >
+                          <label className="fr-field-wrap">
+                            <span className="fr-label">
+                              {primary === "update"
+                                ? he.replyLabel
+                                : primary === "attach"
+                                  ? he.rejectReasonLabel
+                                  : he.optionalNoteLabel}
+                            </span>
+                            <textarea
+                              className="fr-area"
+                              maxLength={REVISION_NOTE_MAX}
+                              value={resultNote}
+                              onChange={(event) => {
+                                setResultNote(event.target.value);
+                              }}
+                            />
+                          </label>
+                          {resultNoteError ? (
+                            <p role="alert" className="fr-field-error">
+                              {resultNoteError}
+                            </p>
+                          ) : null}
+                        </FormDrawer>
+                      ) : revisionOpen ? (
+                        <FormDrawer
+                          titleId="revision-title"
+                          title={he.requestRevision}
+                          icon="arrowSync"
+                          onClose={backToMenu}
+                        >
+                          <label className="fr-field-wrap">
+                            <span className="fr-label">{he.revisionNoteLabel}</span>
+                            <textarea
+                              className="fr-area"
+                              maxLength={REVISION_NOTE_MAX}
+                              value={revisionNote}
+                              onChange={(event) => {
+                                setRevisionNote(event.target.value);
+                              }}
+                            />
+                          </label>
+                          {revisionError ? (
+                            <p role="alert" className="fr-field-error">
+                              {revisionError}
+                            </p>
+                          ) : null}
+                        </FormDrawer>
+                      ) : designDialog ? (
+                        <FormDrawer
+                          titleId="design-action-title"
+                          title={designFormTitle}
+                          icon={designFormIcon}
+                          onClose={backToMenu}
+                        >
+                          {designDialog === "approve" ? (
+                            <label className="fr-field-wrap">
+                              <span className="fr-label">{he.optionalNoteLabel}</span>
+                              <textarea
+                                className="fr-area"
+                                maxLength={REVISION_NOTE_MAX}
+                                value={resultNote}
+                                onChange={(event) => {
+                                  setResultNote(event.target.value);
+                                }}
+                              />
+                            </label>
+                          ) : null}
+                          {designDialog === "attach" ? (
+                            <div className="fr-drop-stack">
+                              <input
+                                ref={designFileInputRef}
+                                type="file"
+                                className="fr-file-input"
+                                tabIndex={-1}
+                                onChange={(event) => {
+                                  const name = firstDroppedName(event.currentTarget.files);
+                                  if (name) {
+                                    setDesignPickedName(name);
+                                  }
+                                  event.currentTarget.value = "";
+                                }}
+                              />
+                              <div
+                                className={`fr-dropzone${designDropActive ? " fr-drop-active" : ""}`}
+                                onDragEnter={(event) => {
+                                  event.preventDefault();
+                                  setDesignDropActive(true);
+                                }}
+                                onDragOver={(event) => {
+                                  event.preventDefault();
+                                  event.dataTransfer.dropEffect = "copy";
+                                }}
+                                onDragLeave={(event) => {
+                                  if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                                    setDesignDropActive(false);
+                                  }
+                                }}
+                                onDrop={(event) => {
+                                  event.preventDefault();
+                                  setDesignDropActive(false);
+                                  const name = firstDroppedName(event.dataTransfer.files);
+                                  if (name) {
+                                    setDesignPickedName(name);
+                                  }
+                                }}
+                              >
+                                <FluentIcon name="documentQueueAdd" size={20} />
+                                {designPickedName ? (
+                                  <FileName name={designPickedName} className="fr-dropzone-name" />
+                                ) : (
+                                  <span className="fr-dropzone-hint">{he.dropHint}</span>
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                className="fr-btn fr-btn-secondary"
+                                onClick={() => {
+                                  designFileInputRef.current?.click();
+                                }}
+                              >
+                                {he.browseFromExplorer}
+                              </button>
+                            </div>
+                          ) : null}
+                          {designDialog === "remind" ? (
+                            <p className="fr-dialog-body">{he.sendReminderConfirm}</p>
+                          ) : null}
+                          {designDialog === "cancel" ? (
+                            <p className="fr-dialog-body">{he.cancelRequestConfirm}</p>
+                          ) : null}
+                        </FormDrawer>
+                      ) : actionsOpen ? (
+                        <div className="fr-action-drawer" role="group" aria-label={he.actions}>
+                          <div className="fr-command-list">
+                            {cardCommands.map((command) => (
+                              <CommandRow
+                                key={command.label}
+                                icon={command.icon}
+                                label={command.label}
+                                danger={command.danger}
+                                onClick={() => {
+                                  runCardAction(command.run, command.stayOpen);
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+                          </div>
+                        </div>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={`fr-actions-launch${actionFormOpen ? "" : " fr-actions-launch-menu"}${dockPrimaryDanger ? " fr-actions-launch-danger" : ""}`}
+                        dir="rtl"
+                        aria-expanded={drawerShown}
+                        aria-haspopup={actionFormOpen ? undefined : "true"}
+                        onClick={() => {
+                          if (actionFormOpen) {
+                            if (!confirmActionForm()) {
+                              return;
+                            }
+                            closeDrawer();
+                            return;
+                          }
+                          if (actionsOpen) {
+                            closeDrawer();
+                            return;
+                          }
+                          setDrawerLeaving(false);
+                          drawerLeavingRef.current = false;
+                          setPanelLeaving(false);
+                          panelLeavingRef.current = false;
+                          setPanelEnter(false);
+                          setActionsOpen(true);
+                        }}
+                      >
+                        <FluentIcon name={dockPrimaryIcon} size={actionFormOpen ? 18 : 20} />
+                        {dockPrimaryLabel}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               );
                 })}
                 </div>
@@ -1659,6 +1892,7 @@ function WorkspaceReadyView({
           >
             <div className="fr-sheet-head">
               <h2 id="compose-title" className="fr-sheet-title">
+                <FluentIcon name="add" size={18} />
                 {he.newRequest}
               </h2>
               <button

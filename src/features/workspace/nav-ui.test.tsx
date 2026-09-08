@@ -110,6 +110,8 @@ describe("primary navigation", () => {
     expect(screen.getAllByTitle("v2-active.docx")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
+    expect(screen.getByRole("button", { name: he.actions })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.reject })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.approve }));

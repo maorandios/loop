@@ -12,6 +12,8 @@ import type {
 
 export const DESIGN_CARDS_STORAGE_KEY = "filerelay.designCards";
 export const DESIGN_PARTNER_ID = "design-partner";
+export const DESIGN_ALL_ACTIONS_ID = "design-all-actions";
+export const DESIGN_HISTORY_ICONS_ID = "design-history-icons";
 
 const HASH = "ab".repeat(32);
 const VERSION: HandoffVersion = {
@@ -100,6 +102,7 @@ type CardSpec = {
   fromMe: boolean;
   withFile: boolean;
   hoursAgo: number;
+  showcaseHistory?: boolean;
 };
 
 function pad2(value: number): string {
@@ -117,6 +120,41 @@ function hoursAgoIso(hours: number): string {
   return new Date(Date.now() - hours * 3_600_000).toISOString();
 }
 
+function iconShowcaseEvents(fromMemberId: string, toMemberId: string): HandoffEvent[] {
+  const steps: Array<{
+    eventType: string;
+    actor: "from" | "to";
+    hoursAgo: number;
+    note?: string | null;
+  }> = [
+    { eventType: "finalized", actor: "from", hoursAgo: 26 },
+    { eventType: "opened", actor: "to", hoursAgo: 24 },
+    { eventType: "modified", actor: "to", hoursAgo: 22 },
+    { eventType: "returned", actor: "to", hoursAgo: 20 },
+    { eventType: "approved", actor: "to", hoursAgo: 18 },
+    { eventType: "review_completed", actor: "to", hoursAgo: 16 },
+    { eventType: "returned_with_file", actor: "to", hoursAgo: 14 },
+    {
+      eventType: "returned_with_reply",
+      actor: "to",
+      hoursAgo: 12,
+      note: "חסרה חתימה בעמוד האחרון",
+    },
+    { eventType: "rejected", actor: "to", hoursAgo: 10, note: "המחירים לא תואמים" },
+    { eventType: "revision_requested", actor: "from", hoursAgo: 8, note: "נא להוסיף את הנספח" },
+    { eventType: "completed", actor: "from", hoursAgo: 6 },
+    { eventType: "cancelled", actor: "from", hoursAgo: 4 },
+    { eventType: "failed", actor: "from", hoursAgo: 2 },
+  ];
+  return steps.map((step) => ({
+    eventType: step.eventType,
+    note: step.note ?? null,
+    versionNumber: null,
+    actorMemberId: step.actor === "from" ? fromMemberId : toMemberId,
+    createdAt: hoursAgoIso(step.hoursAgo),
+  }));
+}
+
 function designEvents(
   spec: CardSpec,
   fromMemberId: string,
@@ -124,22 +162,26 @@ function designEvents(
   createdAt: string,
   at: string,
 ): HandoffEvent[] {
-  const events: HandoffEvent[] = [
-    {
+  if (spec.showcaseHistory) {
+    return iconShowcaseEvents(fromMemberId, toMemberId);
+  }
+  const events: HandoffEvent[] = [];
+  if (!spec.withFile) {
+    events.push({
       eventType: "created",
       note: null,
       versionNumber: null,
       actorMemberId: fromMemberId,
       createdAt,
-    },
-    {
-      eventType: "finalized",
-      note: null,
-      versionNumber: spec.withFile ? 1 : null,
-      actorMemberId: fromMemberId,
-      createdAt: hoursAgoIso(spec.hoursAgo + 4),
-    },
-  ];
+    });
+  }
+  events.push({
+    eventType: "finalized",
+    note: null,
+    versionNumber: spec.withFile ? 1 : null,
+    actorMemberId: fromMemberId,
+    createdAt: hoursAgoIso(spec.hoursAgo + 4),
+  });
   if (spec.withFile && spec.hopStatus === "active") {
     events.push({
       eventType: "opened",
@@ -293,6 +335,29 @@ export function buildDesignInbox(input: {
   partnerId: string;
 }): DesignInbox {
   const specs: CardSpec[] = [
+    {
+      id: DESIGN_ALL_ACTIONS_ID,
+      filename: "בדיקת פעולות.docx",
+      instruction: "כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם",
+      dueOn: dayOffset(1),
+      action: "approval",
+      hopStatus: "active",
+      fromMe: false,
+      withFile: true,
+      hoursAgo: 0.4,
+    },
+    {
+      id: DESIGN_HISTORY_ICONS_ID,
+      filename: "בדיקת אייקונים.docx",
+      instruction: "כרטיס לבחינת כל אייקוני היסטוריית הפעילות",
+      dueOn: dayOffset(1),
+      action: "approval",
+      hopStatus: "active",
+      fromMe: false,
+      withFile: true,
+      hoursAgo: 1,
+      showcaseHistory: true,
+    },
     {
       id: "design-mine-approval",
       filename: "דוח רבעוני.docx",
