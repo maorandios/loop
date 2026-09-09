@@ -117,6 +117,9 @@ describe("cloud error mapping", () => {
     expect(he.cancelRequest).toBe("ביטול בקשה");
     expect(he.requestRevision).toBe("החזרה לצורך תיקון");
     expect(he.cancelRequestConfirm).toBe("לבטל את הבקשה?");
+    expect(he.deleteActivity).toBe("מחיקה");
+    expect(he.deleteActivityConfirm).toBe("למחוק לצמיתות את כל הפעילות סביב הבקשה הזו?");
+    expect(he.activityDeleted).toBe("הפעילות נמחקה");
     expect(he.sendReminderConfirm).toBe("לשלוח תזכורת?");
     expect(he.done).toBe("סגורות");
     expect(he.partialRequestsFailed).toBe("חלק מהבקשות לא נטענו. נסה שוב.");

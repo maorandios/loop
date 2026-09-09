@@ -133,7 +133,8 @@ describe("Inbox UI", () => {
     expect(screen.queryByRole("button", { name: he.newRequest })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.settings })).not.toBeInTheDocument();
     expect(screen.queryByText(he.requestDetails)).not.toBeInTheDocument();
-    expect(screen.getByText("@מאור")).toBeInTheDocument();
+    expect(document.querySelector(".fr-detail-from-row .fr-sentence-at")?.textContent).toBe("@");
+    expect(screen.getByText("מאור")).toBeInTheDocument();
     expect(screen.getByText("maor@drops.app")).toBeInTheDocument();
     expect(screen.getByText(he.activity)).toBeInTheDocument();
     expect(screen.queryByText(he.toRecipient)).not.toBeInTheDocument();
@@ -195,7 +196,7 @@ describe("Inbox UI", () => {
     renderRecipient();
     fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
     fireEvent.click(screen.getByText("נא לאשר"));
-    fireEvent.click(screen.getByRole("button", { name: he.hideHistory }));
+    fireEvent.click(screen.getByText(he.activity));
     expect(screen.getByRole("button", { name: he.showHistory })).toHaveAttribute(
       "aria-expanded",
       "false",

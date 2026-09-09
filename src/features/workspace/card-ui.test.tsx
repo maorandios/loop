@@ -301,6 +301,7 @@ describe("request card UI", () => {
     expect(screen.getByRole("button", { name: he.sendReminder })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.cancelRequest })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.deleteActivity })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(screen.getByRole("dialog", { name: he.approve })).toBeInTheDocument();
@@ -340,7 +341,11 @@ describe("request card UI", () => {
 
     fireEvent.click(screen.getByRole("button", { name: he.sendReminder }));
     expect(screen.getByText(he.sendReminderConfirm)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: he.sendReminder }));
-    expect(screen.getByText(he.reminderSent)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
+
+    fireEvent.click(screen.getByRole("button", { name: he.deleteActivity }));
+    expect(screen.getByText(he.deleteActivityConfirm)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.deleteActivity }));
+    expect(screen.getByText(he.activityDeleted)).toBeInTheDocument();
   });
 });

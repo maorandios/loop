@@ -111,6 +111,7 @@ type WorkspaceReadyScreenProps = {
   onRevisionV2?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
   onRemind?: (handoff: HandoffRecord) => void | Promise<void>;
   onCancelV2?: (handoff: HandoffRecord) => void | Promise<void>;
+  onDeleteHandoff?: (handoff: HandoffRecord) => void | Promise<void>;
   onRetryLocal?: (handoffId: string) => void | Promise<void>;
   onAbortLocal?: (handoffId: string) => void | Promise<void>;
   onRestoreSnapshot?: (handoffId: string) => void | Promise<void>;
@@ -197,6 +198,9 @@ function firstDroppedName(files: FileList | null | undefined): string | null {
   const name = files?.[0]?.name?.trim();
   return name ? name : null;
 }
+
+export const PUSH_DURATION_MS = 3000;
+const PUSH_SLIDE_MS = 240;
 
 function motionDuration(ms: number): number {
   if (import.meta.env.MODE === "test") {
@@ -302,6 +306,7 @@ function WorkspaceReadyView({
   onRevisionV2,
   onRemind,
   onCancelV2,
+  onDeleteHandoff,
   onRetryLocal,
   onAbortLocal,
   onRestoreSnapshot,
@@ -374,15 +379,17 @@ function WorkspaceReadyView({
   const [historyCollapsed, setHistoryCollapsed] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
   const [drawerLeaving, setDrawerLeaving] = useState(false);
+  const [dockExpanded, setDockExpanded] = useState(false);
   const drawerLeavingRef = useRef(false);
   const drawerMotionTimer = useRef(0);
+  const dockExpandFrame = useRef(0);
   const [panelLeaving, setPanelLeaving] = useState(false);
   const [panelEnter, setPanelEnter] = useState(false);
   const panelLeavingRef = useRef(false);
   const panelMotionTimer = useRef(0);
-  const [designDialog, setDesignDialog] = useState<"approve" | "attach" | "remind" | "cancel" | null>(
-    null,
-  );
+  const [designDialog, setDesignDialog] = useState<
+    "approve" | "attach" | "remind" | "cancel" | "delete" | null
+  >(null);
   const [designNotice, setDesignNotice] = useState<string | null>(null);
   const [designPickedName, setDesignPickedName] = useState<string | null>(null);
   const [designDropActive, setDesignDropActive] = useState(false);
@@ -392,6 +399,64 @@ function WorkspaceReadyView({
   const [revisionError, setRevisionError] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [pushNotice, setPushNotice] = useState<{ id: number; text: string } | null>(null);
+  const [pushOpen, setPushOpen] = useState(false);
+  const pushTimer = useRef(0);
+  const pushMotionTimer = useRef(0);
+  const pushExpandFrame = useRef(0);
+  const pushLeavingRef = useRef(false);
+  const pushNoticeRef = useRef(pushNotice);
+  pushNoticeRef.current = pushNotice;
+
+  function expandPush() {
+    window.cancelAnimationFrame(pushExpandFrame.current);
+    if (motionDuration(PUSH_SLIDE_MS) === 0) {
+      setPushOpen(true);
+      return;
+    }
+    setPushOpen(false);
+    pushExpandFrame.current = window.requestAnimationFrame(() => {
+      pushExpandFrame.current = window.requestAnimationFrame(() => {
+        setPushOpen(true);
+      });
+    });
+  }
+
+  function showPush(text: string) {
+    window.clearTimeout(pushTimer.current);
+    window.clearTimeout(pushMotionTimer.current);
+    window.cancelAnimationFrame(pushExpandFrame.current);
+    pushLeavingRef.current = false;
+    const alreadyOpen = pushOpen && pushNoticeRef.current;
+    setPushNotice({ id: Date.now(), text });
+    if (alreadyOpen) {
+      setPushOpen(true);
+      return;
+    }
+    expandPush();
+  }
+
+  function dismissPush() {
+    window.clearTimeout(pushTimer.current);
+    window.cancelAnimationFrame(pushExpandFrame.current);
+    if (!pushNoticeRef.current || pushLeavingRef.current) {
+      return;
+    }
+    const finish = () => {
+      pushMotionTimer.current = 0;
+      pushLeavingRef.current = false;
+      setPushOpen(false);
+      setPushNotice(null);
+    };
+    setPushOpen(false);
+    if (motionDuration(PUSH_SLIDE_MS) === 0) {
+      finish();
+      return;
+    }
+    pushLeavingRef.current = true;
+    window.clearTimeout(pushMotionTimer.current);
+    pushMotionTimer.current = window.setTimeout(finish, PUSH_SLIDE_MS);
+  }
   const reconciling = new Set(reconcilingIds);
   const watchFailed = new Set(watchFailedIds);
   const projected = useMemo(
@@ -465,6 +530,17 @@ function WorkspaceReadyView({
     revisionFor,
     settingsOpen,
   ]);
+
+  useEffect(() => {
+    if (!pushNotice) {
+      return;
+    }
+    window.clearTimeout(pushTimer.current);
+    pushTimer.current = window.setTimeout(() => {
+      dismissPush();
+    }, PUSH_DURATION_MS);
+    return () => window.clearTimeout(pushTimer.current);
+  }, [pushNotice]);
 
   useEffect(() => {
     if (detailId && !screenLeaving) {
@@ -632,6 +708,8 @@ function WorkspaceReadyView({
     setPanelLeaving(false);
     panelLeavingRef.current = false;
     setPanelEnter(false);
+    setDockExpanded(false);
+    window.cancelAnimationFrame(dockExpandFrame.current);
     closeActionForm();
     setHistoryCollapsed(null);
     setDetailId(id);
@@ -672,6 +750,20 @@ function WorkspaceReadyView({
     });
   }
 
+  function expandDock() {
+    window.cancelAnimationFrame(dockExpandFrame.current);
+    if (motionDuration(260) === 0) {
+      setDockExpanded(true);
+      return;
+    }
+    setDockExpanded(false);
+    dockExpandFrame.current = window.requestAnimationFrame(() => {
+      dockExpandFrame.current = window.requestAnimationFrame(() => {
+        setDockExpanded(true);
+      });
+    });
+  }
+
   function closeDrawer() {
     const finish = () => {
       drawerMotionTimer.current = 0;
@@ -680,13 +772,16 @@ function WorkspaceReadyView({
       panelLeavingRef.current = false;
       setPanelLeaving(false);
       setPanelEnter(false);
+      setDockExpanded(false);
       setActionsOpen(false);
       closeActionForm();
     };
+    window.cancelAnimationFrame(dockExpandFrame.current);
     window.clearTimeout(panelMotionTimer.current);
     panelMotionTimer.current = 0;
     panelLeavingRef.current = false;
     setPanelLeaving(false);
+    setDockExpanded(false);
     if (motionDuration(260) === 0) {
       finish();
       return;
@@ -712,6 +807,8 @@ function WorkspaceReadyView({
       setPanelLeaving(false);
       panelLeavingRef.current = false;
       setPanelEnter(false);
+      setDockExpanded(false);
+      window.cancelAnimationFrame(dockExpandFrame.current);
       closeActionForm();
       setHistoryCollapsed(null);
       setDetailId(null);
@@ -743,7 +840,8 @@ function WorkspaceReadyView({
 
   return (
     <main className="fr-shell">
-      <header className="fr-header fr-sticky">
+      <div className="fr-chrome">
+      <header className="fr-header">
         <div className="fr-brand">
           <span className="fr-brand-mark" aria-hidden="true">
             <FluentIcon name="drop" size={16} />
@@ -827,6 +925,36 @@ function WorkspaceReadyView({
           )}
         </div>
       </header>
+      <div className={`fr-push-slot${pushOpen ? " fr-open" : ""}`}>
+        <div className="fr-push-slot-inner">
+          {pushNotice ? (
+            <div className="fr-push-wrap">
+              <div className="fr-push" role="status">
+                <div className="fr-push-body">
+                  <FluentIcon name="alert" size={16} />
+                  <p className="fr-push-text">{pushNotice.text}</p>
+                  <button
+                    type="button"
+                    className="fr-icon-btn fr-push-close"
+                    aria-label={he.closeDialog}
+                    onClick={dismissPush}
+                  >
+                    <FluentIcon name="dismiss" />
+                  </button>
+                </div>
+                <div className="fr-push-progress" aria-hidden="true">
+                  <span
+                    key={pushNotice.id}
+                    className="fr-push-progress-bar"
+                    style={{ animationDuration: `${PUSH_DURATION_MS}ms` }}
+                  />
+                </div>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+      </div>
 
       <div className="fr-main">
         {bannerError || bannerStatus ? (
@@ -1117,7 +1245,9 @@ function WorkspaceReadyView({
                     ? he.attachFile
                     : designDialog === "remind"
                       ? he.sendReminder
-                      : he.cancelRequest;
+                      : designDialog === "delete"
+                        ? he.deleteActivity
+                        : he.cancelRequest;
               const designFormIcon: IconName =
                 designDialog === "approve"
                   ? "checkmarkCircle"
@@ -1125,7 +1255,9 @@ function WorkspaceReadyView({
                     ? "attach"
                     : designDialog === "remind"
                       ? "alert"
-                      : "prohibited";
+                      : designDialog === "delete"
+                        ? "delete"
+                        : "prohibited";
               const confirmActionForm = (): boolean => {
                 if (resultNoteFor === handoff.id) {
                   if (designAllActions) {
@@ -1181,6 +1313,12 @@ function WorkspaceReadyView({
                 if (designDialog === "remind") {
                   setDesignNotice(he.reminderSent);
                 }
+                if (designDialog === "delete") {
+                  if (!designAllActions) {
+                    void onDeleteHandoff?.(handoff);
+                  }
+                  setDesignNotice(he.activityDeleted);
+                }
                 return true;
               };
               const dockPrimaryLabel = resultNoteFor === handoff.id
@@ -1196,7 +1334,8 @@ function WorkspaceReadyView({
                     : he.actions;
               const dockPrimaryDanger = Boolean(
                 (resultNoteFor === handoff.id && (designAllActions || primary === "attach")) ||
-                  designDialog === "cancel",
+                  designDialog === "cancel" ||
+                  designDialog === "delete",
               );
               const dockPrimaryIcon: IconName = resultNoteFor === handoff.id
                 ? primary === "update"
@@ -1460,6 +1599,19 @@ function WorkspaceReadyView({
                           },
                         ]
                       : []),
+                    ...(!commandBusy
+                      ? [
+                          {
+                            icon: "delete" as const,
+                            label: he.deleteActivity,
+                            danger: true,
+                            stayOpen: true,
+                            run: () => {
+                              setDesignDialog("delete");
+                            },
+                          },
+                        ]
+                      : []),
                   ];
               return (
                 <div key={item.key} className={compact ? undefined : "fr-detail-stack"}>
@@ -1531,7 +1683,10 @@ function WorkspaceReadyView({
                       <div className="fr-detail-from">
                         {senderName ? (
                           <div className="fr-detail-from-row">
-                            <span dir="auto">@{senderName}</span>
+                            <span className="fr-sentence-at" aria-hidden="true">
+                              @
+                            </span>
+                            <span dir="auto">{senderName}</span>
                           </div>
                         ) : null}
                         {senderEmail ? (
@@ -1612,23 +1767,23 @@ function WorkspaceReadyView({
                   ) : null}
                   {detailCard ? (
                     <>
-                      <div className="fr-activity-head">
+                      <button
+                        type="button"
+                        className="fr-activity-head"
+                        aria-expanded={historyShown}
+                        aria-label={historyShown ? he.hideHistory : he.showHistory}
+                        onClick={() => {
+                          setHistoryCollapsed(historyShown ? handoff.id : null);
+                        }}
+                      >
                         <span className="fr-activity-label">
                           <FluentIcon name="timeline" size={16} />
                           {he.activity}
                         </span>
-                        <button
-                          type="button"
-                          className="fr-icon-btn"
-                          aria-expanded={historyShown}
-                          aria-label={historyShown ? he.hideHistory : he.showHistory}
-                          onClick={() => {
-                            setHistoryCollapsed(historyShown ? handoff.id : null);
-                          }}
-                        >
+                        <span className="fr-activity-chevron" aria-hidden="true">
                           <FluentIcon name="chevronDown" />
-                        </button>
-                      </div>
+                        </span>
+                      </button>
                       <div className={`fr-history-fold${historyShown ? " fr-open" : ""}`}>
                         <ol className="fr-history">
                           {history.map((line, index) => (
@@ -1671,7 +1826,11 @@ function WorkspaceReadyView({
                     <div
                       className={`fr-detail-dock${drawerShown ? " fr-dock-open" : ""}${drawerLeaving ? " fr-leaving" : ""}`}
                     >
+                      <div className="fr-dock-anchor">
                       {drawerShown ? (
+                        <div
+                          className={`fr-dock-clip${dockExpanded && !drawerLeaving ? " fr-expanded" : ""}`}
+                        >
                         <div className="fr-dock-sheet">
                           <div className="fr-dock-handle" aria-hidden="true" />
                           <div
@@ -1817,6 +1976,9 @@ function WorkspaceReadyView({
                           {designDialog === "cancel" ? (
                             <p className="fr-dialog-body">{he.cancelRequestConfirm}</p>
                           ) : null}
+                          {designDialog === "delete" ? (
+                            <p className="fr-dialog-body">{he.deleteActivityConfirm}</p>
+                          ) : null}
                         </FormDrawer>
                       ) : actionsOpen ? (
                         <div className="fr-action-drawer" role="group" aria-label={he.actions}>
@@ -1836,6 +1998,7 @@ function WorkspaceReadyView({
                         </div>
                       ) : null}
                           </div>
+                        </div>
                         </div>
                       ) : null}
                       <button
@@ -1862,11 +2025,13 @@ function WorkspaceReadyView({
                           panelLeavingRef.current = false;
                           setPanelEnter(false);
                           setActionsOpen(true);
+                          expandDock();
                         }}
                       >
                         <FluentIcon name={dockPrimaryIcon} size={actionFormOpen ? 18 : 20} />
                         {dockPrimaryLabel}
                       </button>
+                      </div>
                     </div>
                   ) : null}
                 </div>

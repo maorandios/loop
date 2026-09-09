@@ -80,6 +80,7 @@ describe("FileRelay Fluent UI", () => {
     expect(screen.queryByRole("button", { name: he.sendReminder })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.cancelRequest })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.requestRevision })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.deleteActivity })).toBeInTheDocument();
     expect(document.querySelector(".fr-action-drawer .fr-command-list")).toBeTruthy();
     expect(document.querySelector(".fr-card-detail .fr-command-list")).toBeFalsy();
     expect(document.querySelector(".fr-overlay .fr-action-sheet")).toBeFalsy();
