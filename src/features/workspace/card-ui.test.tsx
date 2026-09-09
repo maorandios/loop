@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { he } from "../../copy/he";
 import type { HandoffRecord } from "../handoff/types";
 import { MEMBER, v2Completed, v2RootActive } from "../handoff/view.fixtures";
@@ -61,6 +61,15 @@ function legacy(partial: Partial<HandoffRecord> = {}): HandoffRecord {
 }
 
 describe("request card UI", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-02T12:00:00"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("shows sender, recipient, due only when present, and one primary action", () => {
     render(
       <WorkspaceReadyScreen
@@ -76,7 +85,7 @@ describe("request card UI", () => {
         onDownloadAndOpen={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getByText("נא לוודא שהסכומים תואמים לדוח הרבעוני")).toBeInTheDocument();
     expect(screen.getByText("מאור")).toBeInTheDocument();
     expect(screen.queryByText("maor@drops.app")).not.toBeInTheDocument();
@@ -123,7 +132,7 @@ describe("request card UI", () => {
         ]}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getByText(/באיחור/)).toBeInTheDocument();
     expect(document.querySelector(".fr-due-soon, .fr-due-overdue")).toBeFalsy();
   });
@@ -154,7 +163,7 @@ describe("request card UI", () => {
         onAttachFileRequest={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.queryByText(he.needAttachFile)).not.toBeInTheDocument();
     expect(screen.getByText("דוח הכספים לשנת 2021")).toBeInTheDocument();
     expect(screen.queryByText("unknown.txt")).not.toBeInTheDocument();
@@ -178,7 +187,7 @@ describe("request card UI", () => {
         onOpenV2={openV2}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryCompleted} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.primaryCompleted}`) }));
     expect(screen.queryByRole("button", { name: he.openToReview })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openFile })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.downloadAndOpen }));
@@ -205,7 +214,7 @@ describe("request card UI", () => {
         onReject={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
     expect(document.querySelector(".fr-command-list")).toBeFalsy();
@@ -235,7 +244,7 @@ describe("request card UI", () => {
         onOpenV2={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(document.querySelector(".fr-card-status")).toBeTruthy();
     expect(document.querySelector(".fr-card-actor")).toBeFalsy();
     expect(document.querySelector(".fr-sentence-at")?.textContent).toBe("@");
@@ -258,6 +267,33 @@ describe("request card UI", () => {
     expect(document.querySelector(".fr-card-actor")).toBeFalsy();
     expect(document.querySelectorAll(".fr-actions .fr-btn-primary")).toHaveLength(0);
     document.documentElement.removeAttribute("data-theme");
+  });
+
+  it("keeps the full @handle and a long compact title", () => {
+    const { record, transfers } = v2RootActive();
+    const longTitle =
+      "כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם במסך הראשי עם כותרת ארוכה במיוחד";
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        handoffs={[{ ...record, instruction: longTitle }]}
+        transfers={transfers.map((hop) => ({ ...hop, instruction: longTitle }))}
+        members={[
+          { ...members[0]!, displayName: "בן דוד הלוי" },
+          members[1]!,
+        ]}
+        onOpenV2={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
+    expect(document.querySelector(".fr-sentence-at")?.textContent).toBe("@");
+    expect(document.querySelector(".fr-sentence-user")?.textContent).toBe(
+      "בן דוד הלוי",
+    );
+    expect(document.querySelector(".fr-sentence-text")?.textContent).toBe(longTitle);
   });
 
   it("unlocks every action on the design preview card and opens each follow-up", () => {
@@ -292,7 +328,7 @@ describe("request card UI", () => {
         onAttachFileRequest={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     fireEvent.click(screen.getByText("כרטיס לבחינת כל כפתורי הפעולות והחלונות שלהם"));
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
@@ -301,7 +337,7 @@ describe("request card UI", () => {
     expect(screen.getByRole("button", { name: he.sendReminder })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.cancelRequest })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.requestRevision })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.deleteActivity })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "מחיקה" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: he.approve }));
     expect(screen.getByRole("dialog", { name: he.approve })).toBeInTheDocument();
@@ -342,10 +378,6 @@ describe("request card UI", () => {
     fireEvent.click(screen.getByRole("button", { name: he.sendReminder }));
     expect(screen.getByText(he.sendReminderConfirm)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.backToMenu }));
-
-    fireEvent.click(screen.getByRole("button", { name: he.deleteActivity }));
-    expect(screen.getByText(he.deleteActivityConfirm)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: he.deleteActivity }));
-    expect(screen.getByText(he.activityDeleted)).toBeInTheDocument();
+    expect(document.querySelector(".fr-banner")).toBeNull();
   });
 });

@@ -239,3 +239,24 @@ export function visibleListItems(input: {
     )
     .map((card) => ({ key: card.id, card }));
 }
+
+export function latestActivityAt(items: ListItem[]): string | null {
+  let latest: string | null = null;
+  for (const item of items) {
+    if (!latest || item.card.lastActivityAt > latest) {
+      latest = item.card.lastActivityAt;
+    }
+  }
+  return latest;
+}
+
+export function cardMatchesQuery(
+  fields: Array<string | null | undefined>,
+  query: string,
+): boolean {
+  const needle = query.trim().toLocaleLowerCase();
+  if (!needle) {
+    return true;
+  }
+  return fields.some((field) => (field ?? "").toLocaleLowerCase().includes(needle));
+}

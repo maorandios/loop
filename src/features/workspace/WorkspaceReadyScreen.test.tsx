@@ -146,7 +146,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
@@ -171,8 +171,8 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
-    expect(screen.getByRole("tab", { name: `${he.primaryAction} 1` })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
+    expect(screen.getByRole("tab", { name: he.primaryAction })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -198,7 +198,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryCompleted} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryCompleted }));
     expect(screen.getByText("גמור.docx")).toBeInTheDocument();
     expect(screen.queryByText("נכשל.docx")).not.toBeInTheDocument();
   });
@@ -267,7 +267,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     fireEvent.click(screen.getByText("נא לבדוק"));
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
     fireEvent.click(screen.getByRole("button", { name: he.requestRevision }));
@@ -309,7 +309,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getByText(he.syncingChanges)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.attachFile })).not.toBeInTheDocument();
 
@@ -331,7 +331,7 @@ describe("WorkspaceReadyScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
     expect(screen.getByRole("button", { name: he.attachFile })).toBeEnabled();
     expect(screen.queryByText(he.syncingChanges)).not.toBeInTheDocument();
-    expect(screen.getByText("נא לבדוק")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "נא לבדוק" })).toBeInTheDocument();
     expect(screen.queryByText(he.needUpdate)).not.toBeInTheDocument();
 
     rerender(
@@ -399,7 +399,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryCompleted} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryCompleted }));
     fireEvent.click(screen.getByText("נא לבדוק"));
     expect(screen.getByText(he.historySent)).toBeInTheDocument();
     expect(screen.getAllByText("נא לבדוק").length).toBeGreaterThan(0);
@@ -436,8 +436,8 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
-    expect(screen.getByRole("tab", { name: `${he.primaryAction} 1` })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
+    expect(screen.getByRole("tab", { name: he.primaryAction })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -454,6 +454,38 @@ describe("WorkspaceReadyScreen", () => {
     expect(document.body.textContent).not.toMatch(
       /mine|watching|flow_version|active_transfer|preparing|hop-active|handoff_view_inconsistent/,
     );
+  });
+
+  it("routes workspace notices through the header push instead of the old banner", () => {
+    const { rerender } = render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        members={members}
+        error={he.cloudError.unknown_cloud_error}
+      />,
+    );
+
+    expect(screen.getByText(he.cloudError.unknown_cloud_error)).toBeInTheDocument();
+    expect(document.querySelector(".fr-push")).toHaveAttribute("data-tone", "danger");
+    expect(document.querySelector(".fr-banner")).toBeNull();
+
+    rerender(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="דני"
+        currentUserId="user-2"
+        currentMemberId={MEMBER.recipient}
+        members={members}
+        reminderNotice={he.reminderSent}
+      />,
+    );
+
+    expect(screen.getByText(he.reminderSent)).toBeInTheDocument();
+    expect(document.querySelector(".fr-push")).toHaveAttribute("data-tone", "success");
+    expect(document.querySelector(".fr-banner")).toBeNull();
   });
 
   it("keeps a load banner out of the section counts", () => {
@@ -477,10 +509,12 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    expect(screen.getByRole("tab", { name: `${he.primaryAction} 1` })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.primaryInfo} 0` })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.primaryCompleted} 0` })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: he.primaryAction })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: he.primaryInfo })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: he.primaryCompleted })).toBeInTheDocument();
     expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
+    expect(document.querySelector(".fr-push")).toHaveAttribute("data-tone", "danger");
+    expect(document.querySelector(".fr-banner")).toBeNull();
     expect(screen.queryByText("v2-missing.docx")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.tryAgain }));
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
@@ -502,9 +536,11 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(screen.getByText(he.partialRequestsFailed)).toBeInTheDocument();
+    expect(document.querySelector(".fr-push")).toHaveAttribute("data-tone", "danger");
+    expect(document.querySelector(".fr-banner")).toBeNull();
   });
 });

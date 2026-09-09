@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "FileRelay",
-        "width": 416,
+        "width": 520,
         "backgroundColor": "#111315",
-        "height": 756,
+        "height": 680,
         "resizable": false,
         "maximizable": false,
         "minimizable": false,

@@ -6,8 +6,8 @@ use tauri::{
     LogicalSize, Manager, PhysicalPosition, Position, Size, WebviewWindow,
 };
 
-pub const PANEL_WIDTH: f64 = 416.0;
-pub const PANEL_HEIGHT: f64 = 756.0;
+pub const PANEL_WIDTH: f64 = 520.0;
+pub const PANEL_HEIGHT: f64 = 680.0;
 
 static ANIMATING: AtomicBool = AtomicBool::new(false);
 static GENERATION: AtomicU64 = AtomicU64::new(0);

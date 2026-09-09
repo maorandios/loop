@@ -52,7 +52,7 @@ function renderNav() {
 }
 
 function tab(label: string) {
-  return screen.getByRole("tab", { name: new RegExp(`^${label}\\s`) });
+  return screen.getByRole("tab", { name: new RegExp(`^${label}(?:,|$)`) });
 }
 
 describe("primary navigation", () => {
@@ -72,6 +72,11 @@ describe("primary navigation", () => {
     expect(screen.queryByRole("group", { name: he.statusFilter })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.filterAction })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.filterInfo })).not.toBeInTheDocument();
+    expect(document.querySelector(".fr-seg")).toBeFalsy();
+    expect(document.querySelector(".fr-workspace [role='tab']")).toBeFalsy();
+    expect(screen.getByRole("button", { name: he.settings })).toBeInTheDocument();
+    expect(tab(he.primaryAction)).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("button", { name: he.settings })).not.toHaveAttribute("aria-current");
   });
 
   it("switches between action, info, and completed", () => {
@@ -80,14 +85,50 @@ describe("primary navigation", () => {
     expect(tab(he.primaryCompleted)).toHaveAttribute("aria-selected", "true");
     fireEvent.click(tab(he.primaryInfo));
     expect(tab(he.primaryInfo)).toHaveAttribute("aria-selected", "true");
+    expect(tab(he.primaryInfo)).toHaveAttribute("aria-current", "page");
     expect(tab(he.primaryAction)).toHaveAttribute("aria-selected", "false");
+    expect(tab(he.primaryAction)).not.toHaveAttribute("aria-current");
   });
 
-  it("counts one action and one completed for mixed requests", () => {
-    renderNav();
-    expect(tab(he.primaryAction)).toHaveAttribute("aria-label", `${he.primaryAction} 1`);
-    expect(tab(he.primaryInfo)).toHaveAttribute("aria-label", `${he.primaryInfo} 0`);
-    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-label", `${he.primaryCompleted} 1`);
+  it("shows an unread dot until the section is opened", () => {
+    const active = v2RootActive();
+    const done = v2Completed();
+    const screenProps = {
+      workspace,
+      displayName: "דני",
+      currentUserId: "user-2",
+      currentMemberId: MEMBER.recipient,
+      members,
+      onOpenV2: () => undefined,
+      onApprove: () => undefined,
+      onReject: () => undefined,
+    };
+    const { rerender } = render(
+      <WorkspaceReadyScreen
+        {...screenProps}
+        handoffs={[active.record, done.record]}
+        transfers={[...active.transfers, ...done.transfers]}
+      />,
+    );
+    expect(tab(he.primaryCompleted).querySelector(".fr-rail-dot")).toBeFalsy();
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-label", he.primaryCompleted);
+
+    const later = "2099-01-01T00:00:00.000Z";
+    rerender(
+      <WorkspaceReadyScreen
+        {...screenProps}
+        handoffs={[active.record, { ...done.record, updatedAt: later }]}
+        transfers={[...active.transfers, { ...done.transfers[0]!, updatedAt: later }]}
+      />,
+    );
+    expect(tab(he.primaryCompleted)).toHaveAttribute(
+      "aria-label",
+      `${he.primaryCompleted}, ${he.unreadRequests}`,
+    );
+    expect(tab(he.primaryCompleted).querySelector(".fr-rail-dot")).toBeTruthy();
+    fireEvent.click(tab(he.primaryCompleted));
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-label", he.primaryCompleted);
+    expect(tab(he.primaryCompleted).querySelector(".fr-rail-dot")).toBeFalsy();
   });
 
   it("shows inbox items once and keeps v2 actions reachable", () => {
@@ -119,5 +160,31 @@ describe("primary navigation", () => {
     expect(document.body.textContent).not.toMatch(
       /mine|watching|flow_version|storagePath|uuid|tus_chunk|retry/i,
     );
+  });
+
+  it("keeps the rail on details and opens settings in the content pane", () => {
+    renderNav();
+    fireEvent.click(screen.getByText("נא לאשר"));
+    expect(document.querySelector(".fr-rail")).toBeTruthy();
+    expect(screen.getByRole("button", { name: he.settings })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.back })).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: he.searchRequests })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.back }));
+    fireEvent.click(screen.getByRole("button", { name: he.settings }));
+    expect(screen.getByRole("heading", { name: he.settings })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.settings })).toHaveAttribute("aria-current", "page");
+    expect(tab(he.primaryAction)).not.toHaveAttribute("aria-current");
+    expect(document.querySelector(".fr-overlay")).toBeFalsy();
+    expect(screen.queryByRole("searchbox", { name: he.searchRequests })).not.toBeInTheDocument();
+    fireEvent.click(tab(he.primaryCompleted));
+    expect(screen.queryByRole("heading", { name: he.settings })).not.toBeInTheDocument();
+    expect(tab(he.primaryCompleted)).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTitle("v2-completed.docx")).toBeInTheDocument();
+  });
+
+  it("respects prefers-reduced-motion", () => {
+    expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(true);
+    renderNav();
+    expect(document.querySelector(".fr-list-in")).toBeTruthy();
   });
 });

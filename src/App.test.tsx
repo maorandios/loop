@@ -541,7 +541,7 @@ describe("App cloud workspace flow", () => {
       },
     ]);
 
-    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.openAndHandle })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain("storagePath");
@@ -593,7 +593,7 @@ describe("App cloud workspace flow", () => {
     render(
       <App workspaceService={workspaceService} handoffService={handoffService} />,
     );
-    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
+    fireEvent.click(await screen.findByRole("tab", { name: he.primaryAction }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
     handoffService.failNextSnapshot();
     handoffService.notifyIncoming();
@@ -892,7 +892,7 @@ describe("App cloud workspace flow", () => {
         handoffService={handoffService}
       />,
     );
-    fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${he.primaryAction}\\s`) }));
+    fireEvent.click(await screen.findByRole("tab", { name: he.primaryAction }));
     fireEvent.click(await screen.findByText("בדוק"));
     fireEvent.click(await screen.findByRole("button", { name: he.actions }));
     fireEvent.click(await screen.findByRole("button", { name: he.approve }));
@@ -900,7 +900,7 @@ describe("App cloud workspace flow", () => {
       expect(handoffService.completeCalls).toEqual(["handoff-1"]);
     });
     fireEvent.click(screen.getByRole("button", { name: he.back }));
-    fireEvent.click(screen.getByRole("tab", { name: new RegExp(`^${he.primaryCompleted}\\s`) }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryCompleted }));
     expect(screen.getByText("דוח.docx")).toBeInTheDocument();
     expect(screen.getAllByText(he.handoffStatus.completed).length).toBeGreaterThan(0);
   });

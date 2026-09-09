@@ -8,6 +8,8 @@ import {
   mailboxCards,
   primaryCounts,
   visibleListItems,
+  cardMatchesQuery,
+  latestActivityAt,
 } from "./mailbox";
 import { MEMBER, memberName, v1Completed, v2Completed, v2RootActive, v2RootFailed } from "./view.fixtures";
 import { projectHandoffList } from "./view";
@@ -174,6 +176,15 @@ describe("primary counts and visible items", () => {
     ).toHaveLength(0);
   });
 
+  it("matches trimmed case-insensitive filename, person, instruction, and status", () => {
+    expect(cardMatchesQuery(["v2-active.docx", "נא לאשר", "מאור"], "  V2-ACTIVE  ")).toBe(true);
+    expect(cardMatchesQuery(["נא לאשר"], "לאשר")).toBe(true);
+    expect(cardMatchesQuery(["מאור"], "מאור")).toBe(true);
+    expect(cardMatchesQuery(["נדרש ממך לאשר"], "לאשר")).toBe(true);
+    expect(cardMatchesQuery(["v2-active.docx"], "completed")).toBe(false);
+    expect(cardMatchesQuery(["דוח.docx"], "   ")).toBe(true);
+  });
+
   it("puts a completed request on the completed tab", () => {
     const { record, transfers } = v2Completed();
     const projected = projectHandoffList([record], transfers, MEMBER.recipient, memberName);
@@ -193,5 +204,17 @@ describe("primary counts and visible items", () => {
         memberId: MEMBER.recipient,
       }),
     ).toHaveLength(0);
+  });
+
+  it("returns the newest lastActivityAt in a list", () => {
+    const projected = present(MEMBER.recipient);
+    const items = visibleListItems({
+      projected,
+      primaryView: "action",
+      extraFilter: EMPTY_INBOX_FILTER,
+      memberId: MEMBER.recipient,
+    });
+    expect(latestActivityAt([])).toBeNull();
+    expect(latestActivityAt(items)).toBe(items[0]?.card.lastActivityAt);
   });
 });

@@ -64,7 +64,7 @@ describe("FileRelay Fluent UI", () => {
       he.settings,
     );
     expect(screen.getByRole("button", { name: he.newRequest })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
     expect(screen.getByRole("button", { name: he.actions })).toBeInTheDocument();
@@ -72,6 +72,8 @@ describe("FileRelay Fluent UI", () => {
     expect(document.querySelector(".fr-history-fold")).toHaveClass("fr-open");
     expect(screen.queryByRole("button", { name: he.approve })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
+    expect(document.querySelector(".fr-shell")).toHaveClass("fr-drawer-open");
+    expect(document.querySelector(".fr-drawer-scrim")).toBeTruthy();
     expect(screen.getByRole("button", { name: he.actions })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("group", { name: he.actions })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: he.approve })).toBeInTheDocument();
@@ -80,7 +82,7 @@ describe("FileRelay Fluent UI", () => {
     expect(screen.queryByRole("button", { name: he.sendReminder })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.cancelRequest })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.requestRevision })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: he.deleteActivity })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "מחיקה" })).not.toBeInTheDocument();
     expect(document.querySelector(".fr-action-drawer .fr-command-list")).toBeTruthy();
     expect(document.querySelector(".fr-card-detail .fr-command-list")).toBeFalsy();
     expect(document.querySelector(".fr-overlay .fr-action-sheet")).toBeFalsy();
@@ -105,7 +107,7 @@ describe("FileRelay Fluent UI", () => {
         onCancelV2={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryInfo} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryInfo }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
@@ -140,17 +142,24 @@ describe("FileRelay Fluent UI", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     const file = screen.getByTitle("מחירון-Supplier-2026.xlsx");
     expect(file).toHaveAttribute("dir", "auto");
     expect(file.className).toMatch(/fr-plaintext|fr-file-name/);
+    expect(document.querySelector(".fr-rail")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: he.settings }));
+    expect(screen.getByRole("heading", { name: he.settings })).toBeInTheDocument();
+    expect(document.querySelector(".fr-overlay")).toBeFalsy();
+    expect(document.querySelector(".fr-workspace .fr-screen")).toBeTruthy();
     fireEvent.click(screen.getByLabelText(he.themeDark));
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("dark");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     fireEvent.click(screen.getByLabelText(he.themeLight));
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("light");
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(document.querySelector(".fr-rail")).toBeTruthy();
+    expect(document.querySelector(".fr-seg")).toBeFalsy();
     fireEvent.click(screen.getByLabelText(he.themeSystem));
     expect(localStorage.getItem(THEME_STORAGE_KEY)).toBe("system");
   });

@@ -66,10 +66,21 @@ describe("tauri auth storage", () => {
       ...collectProductionSource("src-tauri/src"),
     ];
     const themeFile = path.normalize(path.join(process.cwd(), "src/theme/theme.ts"));
+    const designCardsFile = path.normalize(
+      path.join(process.cwd(), "src/features/handoff/designCards.ts"),
+    );
     const hits = files.filter((file) => {
-      if (path.normalize(file) === themeFile) {
+      const normalized = path.normalize(file);
+      if (normalized === themeFile) {
         const source = readFileSync(file, "utf8");
         expect(source).toContain("filerelay.theme");
+        expect(source).not.toContain("access_token");
+        expect(source).not.toContain("sb-auth");
+        return false;
+      }
+      if (normalized === designCardsFile) {
+        const source = readFileSync(file, "utf8");
+        expect(source).toContain("filerelay.designCards");
         expect(source).not.toContain("access_token");
         expect(source).not.toContain("sb-auth");
         return false;

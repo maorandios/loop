@@ -91,20 +91,20 @@ describe("Inbox UI", () => {
     expect(screen.queryByRole("tab", { name: `${he.done} 0` })).not.toBeInTheDocument();
   });
 
-  it("maps the three mailbox tabs with counts", () => {
+  it("maps the three mailbox tabs", () => {
     renderRecipient();
     expect(screen.getByRole("button", { name: he.filterRequests })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.primaryAction} 1` })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: he.primaryAction })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: `${he.primaryInfo} 0` })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: `${he.primaryCompleted} 0` })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: he.primaryInfo })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: he.primaryCompleted })).toBeInTheDocument();
   });
 
   it("keeps a request on a single row", () => {
     renderRecipient();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.getAllByTitle("v2-active.docx")).toHaveLength(1);
   });
 
@@ -112,7 +112,7 @@ describe("Inbox UI", () => {
     const approve = vi.fn();
     const reject = vi.fn();
     renderRecipient({ onApprove: approve, onReject: reject });
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
     fireEvent.click(screen.getByRole("button", { name: he.actions }));
@@ -126,19 +126,21 @@ describe("Inbox UI", () => {
   it("opens request details from the card and restores focus", () => {
     const openV2 = vi.fn();
     renderRecipient({ onOpenV2: openV2 });
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     fireEvent.click(screen.getByText("נא לאשר"));
     expect(screen.getByRole("heading", { name: "נא לאשר" })).toHaveFocus();
     expect(screen.getByRole("button", { name: he.back })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: he.newRequest })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: he.settings })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.settings })).toBeInTheDocument();
+    expect(document.querySelector(".fr-rail")).toBeTruthy();
+    expect(screen.queryByRole("searchbox", { name: he.searchRequests })).not.toBeInTheDocument();
     expect(screen.queryByText(he.requestDetails)).not.toBeInTheDocument();
     expect(document.querySelector(".fr-detail-from-row .fr-sentence-at")?.textContent).toBe("@");
     expect(screen.getByText("מאור")).toBeInTheDocument();
     expect(screen.getByText("maor@drops.app")).toBeInTheDocument();
     expect(screen.getByText(he.activity)).toBeInTheDocument();
     expect(screen.queryByText(he.toRecipient)).not.toBeInTheDocument();
-    expect(screen.getByText("נא לאשר")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "נא לאשר" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     expect(screen.queryByRole("heading", { name: "נא לאשר" })).not.toBeInTheDocument();
     expect(document.activeElement).toHaveClass("fr-card-compact");
@@ -166,7 +168,7 @@ describe("Inbox UI", () => {
         onDownloadAndOpen={() => undefined}
       />,
     );
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 5` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     const list = document.querySelector(".fr-scroll") as HTMLElement;
     list.scrollTop = 96;
     fireEvent.click(screen.getAllByText("נא לבדוק")[0]!);
@@ -194,7 +196,7 @@ describe("Inbox UI", () => {
 
   it("expands and collapses history on the details screen", () => {
     renderRecipient();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     fireEvent.click(screen.getByText("נא לאשר"));
     fireEvent.click(screen.getByText(he.activity));
     expect(screen.getByRole("button", { name: he.showHistory })).toHaveAttribute(
@@ -218,7 +220,7 @@ describe("Inbox UI", () => {
   it("labels every icon button and respects reduced motion", () => {
     expect(window.matchMedia("(prefers-reduced-motion: reduce)").matches).toBe(true);
     renderRecipient();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     for (const button of document.querySelectorAll(".fr-icon-btn")) {
       expect(button).toHaveAttribute("aria-label");
     }
@@ -230,7 +232,7 @@ describe("Inbox UI", () => {
 
   it("does not leak technical ids from the list or details", () => {
     renderRecipient();
-    fireEvent.click(screen.getByRole("tab", { name: `${he.primaryAction} 1` }));
+    fireEvent.click(screen.getByRole("tab", { name: he.primaryAction }));
     expect(screen.queryByRole("button", { name: he.moreActions })).not.toBeInTheDocument();
     fireEvent.click(screen.getByText("נא לאשר"));
     expect(document.body.textContent).not.toMatch(

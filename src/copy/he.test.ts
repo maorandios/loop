@@ -93,6 +93,10 @@ describe("cloud error mapping", () => {
     expect(he.noPrimaryAction).toBe("אין בקשות לפעולה");
     expect(he.noPrimaryInfo).toBe("אין בקשות לידיעה");
     expect(he.noPrimaryCompleted).toBe("אין בקשות שהושלמו");
+    expect(he.searchRequests).toBe("חיפוש בבקשות");
+    expect(he.clearSearch).toBe("נקה חיפוש");
+    expect(he.noSearchMatches).toBe("לא נמצאו בקשות מתאימות");
+    expect(he.unreadRequests).toBe("יש בקשות חדשות");
     expect(he.filterAction).toBe("לפעולה");
     expect(he.filterInfo).toBe("לידיעה");
     expect(he.filterCompleted).toBe("הושלם");
@@ -117,9 +121,6 @@ describe("cloud error mapping", () => {
     expect(he.cancelRequest).toBe("ביטול בקשה");
     expect(he.requestRevision).toBe("החזרה לצורך תיקון");
     expect(he.cancelRequestConfirm).toBe("לבטל את הבקשה?");
-    expect(he.deleteActivity).toBe("מחיקה");
-    expect(he.deleteActivityConfirm).toBe("למחוק לצמיתות את כל הפעילות סביב הבקשה הזו?");
-    expect(he.activityDeleted).toBe("הפעילות נמחקה");
     expect(he.sendReminderConfirm).toBe("לשלוח תזכורת?");
     expect(he.done).toBe("סגורות");
     expect(he.partialRequestsFailed).toBe("חלק מהבקשות לא נטענו. נסה שוב.");

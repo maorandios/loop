@@ -13,9 +13,10 @@ import {
   type InboxExtraFilter,
 } from "../handoff/inboxList";
 import {
-  PRIMARY_VIEWS,
-  primaryCounts,
+  cardMatchesQuery,
+  latestActivityAt,
   visibleListItems,
+  PRIMARY_VIEWS,
   type PrimaryView,
 } from "../handoff/mailbox";
 import {
@@ -28,6 +29,8 @@ import {
 import { canReturnFile } from "../handoff/reconciliation";
 import { projectHandoffList } from "../handoff/view";
 import { FilterPopover } from "./FilterPopover";
+import { NavigationRail } from "./NavigationRail";
+import { WorkspaceToolbar } from "./WorkspaceToolbar";
 import {
   canCancelV2,
   canRemind,
@@ -56,6 +59,13 @@ import type {
   TransferRecord,
 } from "../handoff/types";
 import type { Workspace, WorkspaceMember } from "./types";
+
+function laterStamp(left: string, right: string | null): string {
+  if (!right || left >= right) {
+    return left;
+  }
+  return right;
+}
 
 type WorkspaceReadyScreenProps = {
   workspace: Workspace;
@@ -111,7 +121,6 @@ type WorkspaceReadyScreenProps = {
   onRevisionV2?: (handoff: HandoffRecord, note: string) => void | Promise<void>;
   onRemind?: (handoff: HandoffRecord) => void | Promise<void>;
   onCancelV2?: (handoff: HandoffRecord) => void | Promise<void>;
-  onDeleteHandoff?: (handoff: HandoffRecord) => void | Promise<void>;
   onRetryLocal?: (handoffId: string) => void | Promise<void>;
   onAbortLocal?: (handoffId: string) => void | Promise<void>;
   onRestoreSnapshot?: (handoffId: string) => void | Promise<void>;
@@ -201,6 +210,18 @@ function firstDroppedName(files: FileList | null | undefined): string | null {
 
 export const PUSH_DURATION_MS = 3000;
 const PUSH_SLIDE_MS = 240;
+const SCREEN_SLIDE_MS = 240;
+
+type PushTone = "accent" | "danger" | "success";
+
+type PushNotice = {
+  id: number;
+  text: string;
+  tone: PushTone;
+  icon: IconName;
+  actionLabel?: string;
+  onAction?: () => void;
+};
 
 function motionDuration(ms: number): number {
   if (import.meta.env.MODE === "test") {
@@ -219,28 +240,6 @@ function runAfterMotion(ms: number, fn: () => void) {
     return;
   }
   window.setTimeout(fn, wait);
-}
-
-const TABS: PrimaryView[] = PRIMARY_VIEWS;
-
-function tabLabel(tab: PrimaryView): string {
-  if (tab === "action") {
-    return he.primaryAction;
-  }
-  if (tab === "info") {
-    return he.primaryInfo;
-  }
-  return he.primaryCompleted;
-}
-
-function tabIcon(tab: PrimaryView): IconName {
-  if (tab === "action") {
-    return "mailInboxArrowDown";
-  }
-  if (tab === "info") {
-    return "mailInboxArrowUp";
-  }
-  return "mailInboxCheckmark";
 }
 
 function emptyLabel(tab: PrimaryView): string {
@@ -291,7 +290,6 @@ function WorkspaceReadyView({
   onSubmitFileRequest,
   onDownloadAndOpen,
   onOpenLatest,
-  onOpenFolder,
   onReturnFile,
   onCompleteHandoff,
   onRequestRevision,
@@ -306,7 +304,6 @@ function WorkspaceReadyView({
   onRevisionV2,
   onRemind,
   onCancelV2,
-  onDeleteHandoff,
   onRetryLocal,
   onAbortLocal,
   onRestoreSnapshot,
@@ -350,6 +347,13 @@ function WorkspaceReadyView({
   const { pref: themePref, setPref: setThemePref } = useTheme();
   const [copyError, setCopyError] = useState<string | null>(null);
   const [primaryView, setPrimaryView] = useState<PrimaryView>("action");
+  const [slideDir, setSlideDir] = useState<"start" | "end">("start");
+  const [seenAt, setSeenAt] = useState<Record<PrimaryView, string>>(() => {
+    const now = new Date().toISOString();
+    return { action: now, info: now, completed: now };
+  });
+  const seenHydrated = useRef(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const [extraFilter, setExtraFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [draftFilter, setDraftFilter] = useState<InboxExtraFilter>(EMPTY_INBOX_FILTER);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -388,7 +392,7 @@ function WorkspaceReadyView({
   const panelLeavingRef = useRef(false);
   const panelMotionTimer = useRef(0);
   const [designDialog, setDesignDialog] = useState<
-    "approve" | "attach" | "remind" | "cancel" | "delete" | null
+    "approve" | "attach" | "remind" | "cancel" | null
   >(null);
   const [designNotice, setDesignNotice] = useState<string | null>(null);
   const [designPickedName, setDesignPickedName] = useState<string | null>(null);
@@ -399,7 +403,7 @@ function WorkspaceReadyView({
   const [revisionError, setRevisionError] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [pushNotice, setPushNotice] = useState<{ id: number; text: string } | null>(null);
+  const [pushNotice, setPushNotice] = useState<PushNotice | null>(null);
   const [pushOpen, setPushOpen] = useState(false);
   const pushTimer = useRef(0);
   const pushMotionTimer = useRef(0);
@@ -407,6 +411,8 @@ function WorkspaceReadyView({
   const pushLeavingRef = useRef(false);
   const pushNoticeRef = useRef(pushNotice);
   pushNoticeRef.current = pushNotice;
+  const onRetryLoadRef = useRef(onRetryLoad);
+  onRetryLoadRef.current = onRetryLoad;
 
   function expandPush() {
     window.cancelAnimationFrame(pushExpandFrame.current);
@@ -422,13 +428,25 @@ function WorkspaceReadyView({
     });
   }
 
-  function showPush(text: string) {
+  function showPush(
+    text: string,
+    tone: PushTone = "accent",
+    icon: IconName = "alert",
+    action?: { label: string; onClick: () => void },
+  ) {
     window.clearTimeout(pushTimer.current);
     window.clearTimeout(pushMotionTimer.current);
     window.cancelAnimationFrame(pushExpandFrame.current);
     pushLeavingRef.current = false;
     const alreadyOpen = pushOpen && pushNoticeRef.current;
-    setPushNotice({ id: Date.now(), text });
+    setPushNotice({
+      id: Date.now(),
+      text,
+      tone,
+      icon,
+      actionLabel: action?.label,
+      onAction: action?.onClick,
+    });
     if (alreadyOpen) {
       setPushOpen(true);
       return;
@@ -470,24 +488,126 @@ function WorkspaceReadyView({
       ),
     [handoffs, transfers, currentMemberId, members, v2LoadFailed],
   );
-  const tabCounts = primaryCounts(projected, currentMemberId, (handoffId) =>
-    localStates[handoffId] ?? "idle",
-  );
-  const visibleItems = visibleListItems({
+  const sectionItems = visibleListItems({
     projected,
     primaryView,
     extraFilter,
     memberId: currentMemberId,
     localWorkOf: (handoffId) => localStates[handoffId] ?? "idle",
   });
+  const visibleItems = sectionItems.filter((item) => {
+    const presented = presentHandoffCard(
+      item.card,
+      currentMemberId,
+      (id) => memberName(members, id),
+      {
+        useMe: true,
+        emailOf: (id) => memberEmail(members, id),
+      },
+    );
+    return cardMatchesQuery(
+      [
+        item.card.filename,
+        item.card.instruction,
+        item.card.statusSentence,
+        presented.title,
+        presented.subjectText,
+        presented.headline,
+        presented.statusLabel,
+        presented.people.senderName,
+        presented.people.recipientName,
+        presented.counterpart?.name,
+      ],
+      searchQuery,
+    );
+  });
+  const searching = Boolean(searchQuery.trim());
+  const unread = useMemo(() => {
+    const flags: Record<PrimaryView, boolean> = {
+      action: false,
+      info: false,
+      completed: false,
+    };
+    for (const view of PRIMARY_VIEWS) {
+      if (!settingsOpen && view === primaryView) {
+        continue;
+      }
+      const latest = latestActivityAt(
+        visibleListItems({
+          projected,
+          primaryView: view,
+          extraFilter: EMPTY_INBOX_FILTER,
+          memberId: currentMemberId,
+          localWorkOf: (handoffId) => localStates[handoffId] ?? "idle",
+        }),
+      );
+      flags[view] = Boolean(latest && latest > seenAt[view]);
+    }
+    return flags;
+  }, [
+    currentMemberId,
+    localStates,
+    primaryView,
+    projected,
+    seenAt,
+    settingsOpen,
+  ]);
   const detailCard = detailId
     ? (projected.cards.find((card) => card.id === detailId) ?? null)
     : null;
+  const drawerScrimShown = Boolean(
+    detailCard &&
+      (actionsOpen ||
+        drawerLeaving ||
+        Boolean(designDialog) ||
+        resultNoteFor !== null ||
+        revisionFor !== null),
+  );
   const showLoadBanner = projected.inconsistent;
   const sending =
     sendProgress === "sending" || sendProgress === "uploading" || sendProgress === "finalizing";
   const bannerError = error ?? copyError;
-  const bannerStatus = reminderNotice ?? designNotice;
+  const sectionLatest = latestActivityAt(sectionItems);
+
+  useEffect(() => {
+    if (seenHydrated.current || projected.cards.length === 0) {
+      return;
+    }
+    seenHydrated.current = true;
+    const now = new Date().toISOString();
+    const next: Record<PrimaryView, string> = {
+      action: now,
+      info: now,
+      completed: now,
+    };
+    for (const view of PRIMARY_VIEWS) {
+      next[view] = laterStamp(
+        now,
+        latestActivityAt(
+          visibleListItems({
+            projected,
+            primaryView: view,
+            extraFilter: EMPTY_INBOX_FILTER,
+            memberId: currentMemberId,
+            localWorkOf: (handoffId) => localStates[handoffId] ?? "idle",
+          }),
+        ),
+      );
+    }
+    setSeenAt(next);
+  }, [currentMemberId, localStates, projected]);
+
+  useEffect(() => {
+    if (settingsOpen || !sectionLatest) {
+      return;
+    }
+    setSeenAt((prev) => {
+      if (prev[primaryView] >= sectionLatest) {
+        return prev;
+      }
+      return { ...prev, [primaryView]: sectionLatest };
+    });
+  }, [primaryView, sectionLatest, settingsOpen]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -541,6 +661,46 @@ function WorkspaceReadyView({
     }, PUSH_DURATION_MS);
     return () => window.clearTimeout(pushTimer.current);
   }, [pushNotice]);
+
+  useEffect(() => {
+    if (!bannerError) {
+      return;
+    }
+    showPush(bannerError, "danger", "errorCircle");
+  }, [bannerError]);
+
+  useEffect(() => {
+    if (!reminderNotice) {
+      return;
+    }
+    showPush(reminderNotice, "success", "checkmarkCircle");
+  }, [reminderNotice]);
+
+  useEffect(() => {
+    if (!designNotice) {
+      return;
+    }
+    showPush(designNotice, "success", "checkmarkCircle");
+  }, [designNotice]);
+
+  useEffect(() => {
+    if (!showLoadBanner) {
+      return;
+    }
+    showPush(
+      he.partialRequestsFailed,
+      "danger",
+      "errorCircle",
+      onRetryLoadRef.current
+        ? {
+            label: he.tryAgain,
+            onClick: () => {
+              void onRetryLoadRef.current?.();
+            },
+          }
+        : undefined,
+    );
+  }, [showLoadBanner]);
 
   useEffect(() => {
     if (detailId && !screenLeaving) {
@@ -712,6 +872,7 @@ function WorkspaceReadyView({
     window.cancelAnimationFrame(dockExpandFrame.current);
     closeActionForm();
     setHistoryCollapsed(null);
+    setSlideDir("start");
     setDetailId(id);
   }
 
@@ -814,12 +975,13 @@ function WorkspaceReadyView({
       setDetailId(null);
       setScreenLeaving(false);
     };
-    if (motionDuration(240) === 0) {
+    if (motionDuration(SCREEN_SLIDE_MS) === 0) {
       finish();
       return;
     }
+    setSlideDir("end");
     setScreenLeaving(true);
-    runAfterMotion(240, finish);
+    runAfterMotion(SCREEN_SLIDE_MS, finish);
   }
 
   function closeSettings() {
@@ -830,33 +992,115 @@ function WorkspaceReadyView({
         settingsTriggerRef.current?.focus();
       });
     };
-    if (motionDuration(240) === 0) {
+    if (motionDuration(SCREEN_SLIDE_MS) === 0) {
       finish();
       return;
     }
+    setSlideDir("end");
     setScreenLeaving(true);
-    runAfterMotion(240, finish);
+    runAfterMotion(SCREEN_SLIDE_MS, finish);
+  }
+
+  function goToPrimary(tab: PrimaryView) {
+    const from = PRIMARY_VIEWS.indexOf(primaryView);
+    const to = PRIMARY_VIEWS.indexOf(tab);
+    setSlideDir(settingsOpen || detailId || to > from ? "end" : "start");
+    setFilterOpen(false);
+    setSettingsOpen(false);
+    setScreenLeaving(false);
+    setPrimaryView(tab);
+    setActionsOpen(false);
+    setDrawerLeaving(false);
+    drawerLeavingRef.current = false;
+    closeActionForm();
+    setHistoryCollapsed(null);
+    setDetailId(null);
+  }
+
+  function openSettings() {
+    if (listScrollRef.current) {
+      listScrollTop.current = listScrollRef.current.scrollTop;
+    }
+    setDetailId(null);
+    setActionsOpen(false);
+    setDrawerLeaving(false);
+    drawerLeavingRef.current = false;
+    setHistoryCollapsed(null);
+    setFilterOpen(false);
+    setSlideDir("start");
+    setSettingsOpen(true);
   }
 
   return (
-    <main className="fr-shell">
+    <main className={`fr-shell${drawerScrimShown ? " fr-drawer-open" : ""}`}>
+      <NavigationRail
+        primaryView={primaryView}
+        settingsOpen={settingsOpen}
+        unread={unread}
+        settingsRef={settingsTriggerRef}
+        onSelectView={goToPrimary}
+        onOpenSettings={openSettings}
+      />
+      <div className="fr-workspace">
       <div className="fr-chrome">
       <header className="fr-header">
-        <div className="fr-brand">
-          <span className="fr-brand-mark" aria-hidden="true">
-            <FluentIcon name="drop" size={16} />
-          </span>
-          <h1 className="fr-app-title">{he.appName}</h1>
-        </div>
-        <div className="fr-header-tools">
-          {detailCard ? (
+        {detailCard ? (
+          <div className="fr-detail-head">
             <button type="button" className="fr-header-back" onClick={closeDetail}>
               <FluentIcon name="chevronLeft" />
               {he.back}
             </button>
-          ) : (
-            <>
-              {!waiting && onSubmitSend ? (
+            <p dir="auto" className="fr-detail-head-title">
+              {(() => {
+                const presented = presentHandoffCard(
+                  detailCard,
+                  currentMemberId,
+                  (id) => memberName(members, id),
+                  { useMe: false, emailOf: (id) => memberEmail(members, id) },
+                );
+                return presented.title ?? presented.subjectText ?? presented.headline;
+              })()}
+            </p>
+          </div>
+        ) : settingsOpen ? null : (
+          <WorkspaceToolbar
+            searchQuery={searchQuery}
+            onSearchChange={setSearchQuery}
+            filter={
+              <div className="fr-filter-wrap">
+                <button
+                  type="button"
+                  className="fr-icon-btn"
+                  aria-label={he.filterRequests}
+                  aria-expanded={filterOpen}
+                  onClick={() => {
+                    setDraftFilter(extraFilter);
+                    setFilterOpen((open) => !open);
+                  }}
+                >
+                  <FluentIcon name="filter" />
+                </button>
+                {isInboxFilterActive(extraFilter) ? <span className="fr-filter-dot" /> : null}
+                {filterOpen ? (
+                  <FilterPopover
+                    filter={draftFilter}
+                    members={members}
+                    onChange={setDraftFilter}
+                    onApply={() => {
+                      setExtraFilter(draftFilter);
+                      setFilterOpen(false);
+                    }}
+                    onClear={() => {
+                      setDraftFilter(EMPTY_INBOX_FILTER);
+                      setExtraFilter(EMPTY_INBOX_FILTER);
+                      setFilterOpen(false);
+                    }}
+                  />
+                ) : null}
+              </div>
+            }
+            compose={
+              !waiting && onSubmitSend ? (
                 <button
                   type="button"
                   className="fr-icon-btn fr-icon-btn-accent"
@@ -868,71 +1112,37 @@ function WorkspaceReadyView({
                 >
                   <FluentIcon name="add" />
                 </button>
-              ) : null}
-              {!settingsOpen ? (
-                <div className="fr-filter-wrap">
-                  <button
-                    type="button"
-                    className="fr-icon-btn"
-                    aria-label={he.filterRequests}
-                    aria-expanded={filterOpen}
-                    onClick={() => {
-                      setDraftFilter(extraFilter);
-                      setFilterOpen((open) => !open);
-                    }}
-                  >
-                    <FluentIcon name="filter" />
-                  </button>
-                  {isInboxFilterActive(extraFilter) ? <span className="fr-filter-dot" /> : null}
-                  {filterOpen ? (
-                    <FilterPopover
-                      filter={draftFilter}
-                      members={members}
-                      onChange={setDraftFilter}
-                      onApply={() => {
-                        setExtraFilter(draftFilter);
-                        setFilterOpen(false);
-                      }}
-                      onClear={() => {
-                        setDraftFilter(EMPTY_INBOX_FILTER);
-                        setExtraFilter(EMPTY_INBOX_FILTER);
-                        setFilterOpen(false);
-                      }}
-                    />
-                  ) : null}
-                </div>
-              ) : null}
-              <button
-                type="button"
-                className="fr-icon-btn"
-                aria-label={he.settings}
-                ref={settingsTriggerRef}
-                onClick={() => {
-                  if (listScrollRef.current) {
-                    listScrollTop.current = listScrollRef.current.scrollTop;
-                  }
-                  setDetailId(null);
-                  setActionsOpen(false);
-                  setDrawerLeaving(false);
-                  drawerLeavingRef.current = false;
-                  setHistoryCollapsed(null);
-                  setSettingsOpen(true);
-                }}
-              >
-                <FluentIcon name="settings" />
-              </button>
-            </>
-          )}
-        </div>
+              ) : (
+                <span className="fr-toolbar-spacer" />
+              )
+            }
+          />
+        )}
       </header>
       <div className={`fr-push-slot${pushOpen ? " fr-open" : ""}`}>
         <div className="fr-push-slot-inner">
           {pushNotice ? (
             <div className="fr-push-wrap">
-              <div className="fr-push" role="status">
+              <div
+                className="fr-push"
+                data-tone={pushNotice.tone}
+                role={pushNotice.tone === "danger" ? "alert" : "status"}
+              >
                 <div className="fr-push-body">
-                  <FluentIcon name="alert" size={16} />
+                  <FluentIcon name={pushNotice.icon} size={16} />
                   <p className="fr-push-text">{pushNotice.text}</p>
+                  {pushNotice.actionLabel && pushNotice.onAction ? (
+                    <button
+                      type="button"
+                      className="fr-push-action"
+                      onClick={() => {
+                        pushNotice.onAction?.();
+                        dismissPush();
+                      }}
+                    >
+                      {pushNotice.actionLabel}
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="fr-icon-btn fr-push-close"
@@ -957,40 +1167,15 @@ function WorkspaceReadyView({
       </div>
 
       <div className="fr-main">
-        {bannerError || bannerStatus ? (
-          <div
-            role={bannerError ? "alert" : "status"}
-            className={`fr-banner${bannerError ? " fr-banner-error" : ""}`}
-          >
-            <p>{bannerError ?? bannerStatus}</p>
-          </div>
-        ) : null}
-
         {waiting && !settingsOpen && !detailCard ? (
           <p className="fr-hint">{he.waitingForMembers}</p>
-        ) : null}
-
-        {showLoadBanner ? (
-          <div role="alert" className="fr-banner fr-banner-error">
-            <p>{he.partialRequestsFailed}</p>
-            {onRetryLoad ? (
-              <button
-                type="button"
-                className="fr-btn fr-btn-secondary"
-                onClick={() => {
-                  void onRetryLoad();
-                }}
-              >
-                {he.tryAgain}
-              </button>
-            ) : null}
-          </div>
         ) : null}
 
         {settingsOpen ? (
           <section
             ref={settingsScreenRef}
             className={`fr-screen${screenLeaving ? " fr-leaving" : " fr-screen-in"}`}
+            data-slide={slideDir}
           >
             <div className="fr-page-head">
               <button
@@ -1110,42 +1295,20 @@ function WorkspaceReadyView({
         ) : null}
 
         {!settingsOpen ? (
-        <div className={detailCard ? `fr-screen${screenLeaving ? " fr-leaving" : " fr-screen-in"}` : "fr-list-in"}>
-        {detailCard ? null : (
-          <div className="fr-nav-block">
-            <div role="tablist" className="fr-seg">
-              {TABS.map((tab) => (
-                <button
-                  key={tab}
-                  type="button"
-                  role="tab"
-                  aria-selected={primaryView === tab}
-                  aria-label={`${tabLabel(tab)} ${tabCounts[tab]}`}
-                  className="fr-seg-btn"
-                  onClick={() => {
-                    setPrimaryView(tab);
-                  }}
-                >
-                  <span className="fr-seg-count">{tabCounts[tab]}</span>
-                  <span className="fr-seg-label">
-                    <FluentIcon name={tabIcon(tab)} size={16} />
-                    {tabLabel(tab)}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
+        <div
+          key={detailCard ? "detail" : primaryView}
+          className={detailCard ? `fr-screen${screenLeaving ? " fr-leaving" : " fr-screen-in"}` : "fr-list-in"}
+          data-slide={slideDir}
+        >
         <section
           ref={listScrollRef}
           className="fr-scroll"
           key={detailCard ? "detail" : primaryView}
         >
           {!detailCard && visibleItems.length === 0 ? (
-            <div className="fr-empty">
-              <FluentIcon name="document" />
-              <p>{emptyLabel(primaryView)}</p>
+            <div className={`fr-empty${searching ? " fr-empty-search" : ""}`}>
+              <FluentIcon name={searching ? "search" : "document"} />
+              <p>{searching ? he.noSearchMatches : emptyLabel(primaryView)}</p>
             </div>
           ) : (
             (detailCard
@@ -1245,9 +1408,7 @@ function WorkspaceReadyView({
                     ? he.attachFile
                     : designDialog === "remind"
                       ? he.sendReminder
-                      : designDialog === "delete"
-                        ? he.deleteActivity
-                        : he.cancelRequest;
+                      : he.cancelRequest;
               const designFormIcon: IconName =
                 designDialog === "approve"
                   ? "checkmarkCircle"
@@ -1255,9 +1416,7 @@ function WorkspaceReadyView({
                     ? "attach"
                     : designDialog === "remind"
                       ? "alert"
-                      : designDialog === "delete"
-                        ? "delete"
-                        : "prohibited";
+                      : "prohibited";
               const confirmActionForm = (): boolean => {
                 if (resultNoteFor === handoff.id) {
                   if (designAllActions) {
@@ -1313,12 +1472,6 @@ function WorkspaceReadyView({
                 if (designDialog === "remind") {
                   setDesignNotice(he.reminderSent);
                 }
-                if (designDialog === "delete") {
-                  if (!designAllActions) {
-                    void onDeleteHandoff?.(handoff);
-                  }
-                  setDesignNotice(he.activityDeleted);
-                }
                 return true;
               };
               const dockPrimaryLabel = resultNoteFor === handoff.id
@@ -1334,8 +1487,7 @@ function WorkspaceReadyView({
                     : he.actions;
               const dockPrimaryDanger = Boolean(
                 (resultNoteFor === handoff.id && (designAllActions || primary === "attach")) ||
-                  designDialog === "cancel" ||
-                  designDialog === "delete",
+                  designDialog === "cancel",
               );
               const dockPrimaryIcon: IconName = resultNoteFor === handoff.id
                 ? primary === "update"
@@ -1599,19 +1751,6 @@ function WorkspaceReadyView({
                           },
                         ]
                       : []),
-                    ...(!commandBusy
-                      ? [
-                          {
-                            icon: "delete" as const,
-                            label: he.deleteActivity,
-                            danger: true,
-                            stayOpen: true,
-                            run: () => {
-                              setDesignDialog("delete");
-                            },
-                          },
-                        ]
-                      : []),
                   ];
               return (
                 <div key={item.key} className={compact ? undefined : "fr-detail-stack"}>
@@ -1657,13 +1796,14 @@ function WorkspaceReadyView({
                             <span className="fr-sentence-at" aria-hidden="true">
                               @
                             </span>
+                            {" "}
                             <span dir="auto" className="fr-sentence-user">
                               {handle}
                             </span>
                           </span>
                           {presented.title ? (
                             <span className="fr-sentence-dot" aria-hidden="true">
-                              ·
+                              {" · "}
                             </span>
                           ) : null}
                         </>
@@ -1813,15 +1953,6 @@ function WorkspaceReadyView({
                     </>
                   ) : null}
                 </article>
-                  {!compact && drawerShown ? (
-                    <div
-                      className={`fr-drawer-scrim${drawerLeaving ? " fr-leaving" : ""}`}
-                      role="presentation"
-                      onClick={() => {
-                        closeDrawer();
-                      }}
-                    />
-                  ) : null}
                   {!compact && cardCommands.length > 0 ? (
                     <div
                       className={`fr-detail-dock${drawerShown ? " fr-dock-open" : ""}${drawerLeaving ? " fr-leaving" : ""}`}
@@ -1976,9 +2107,6 @@ function WorkspaceReadyView({
                           {designDialog === "cancel" ? (
                             <p className="fr-dialog-body">{he.cancelRequestConfirm}</p>
                           ) : null}
-                          {designDialog === "delete" ? (
-                            <p className="fr-dialog-body">{he.deleteActivityConfirm}</p>
-                          ) : null}
                         </FormDrawer>
                       ) : actionsOpen ? (
                         <div className="fr-action-drawer" role="group" aria-label={he.actions}>
@@ -2044,6 +2172,17 @@ function WorkspaceReadyView({
         </section>
         </div>
         ) : null}
+      </div>
+
+      {drawerScrimShown ? (
+        <div
+          className={`fr-drawer-scrim${drawerLeaving ? " fr-leaving" : ""}`}
+          role="presentation"
+          onClick={() => {
+            closeDrawer();
+          }}
+        />
+      ) : null}
       </div>
 
       {composeOpen && !waiting && onSubmitSend ? (
