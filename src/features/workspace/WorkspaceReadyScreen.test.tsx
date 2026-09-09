@@ -221,6 +221,10 @@ describe("WorkspaceReadyScreen", () => {
     openCompose();
     fireEvent.click(screen.getByRole("button", { name: he.requestFile }));
     expect(screen.queryByRole("button", { name: he.chooseFile })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(he.toAtLabel), {
+      target: { value: "דני" },
+    });
+    fireEvent.click(screen.getByRole("option", { name: "דני" }));
     fireEvent.change(screen.getByLabelText(he.fileDescriptionLabel), {
       target: { value: "נא לצרף את הדוח החתום" },
     });
@@ -231,6 +235,40 @@ describe("WorkspaceReadyScreen", () => {
       dueOn: null,
     });
     expect(document.body.textContent).not.toMatch(/create_file_request|handoff_id|storage_path/);
+  });
+
+  it("does not send a file request without a recipient or description", () => {
+    const onSubmitFileRequest = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={members}
+        onSubmitSend={() => undefined}
+        onSubmitFileRequest={onSubmitFileRequest}
+        onPickFile={() => undefined}
+      />,
+    );
+
+    openCompose();
+    fireEvent.click(screen.getByRole("button", { name: he.requestFile }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendRequest }));
+    expect(onSubmitFileRequest).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.recipientRequired);
+    expect(document.querySelector(".fr-compose-request .fr-push")).toHaveAttribute(
+      "data-tone",
+      "danger",
+    );
+
+    fireEvent.change(screen.getByLabelText(he.toAtLabel), {
+      target: { value: "דני" },
+    });
+    fireEvent.click(screen.getByRole("option", { name: "דני" }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendRequest }));
+    expect(onSubmitFileRequest).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.fileDescriptionRequired);
   });
 
   it("does not send without a file, recipient, or instruction", () => {

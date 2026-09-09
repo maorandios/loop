@@ -142,6 +142,12 @@ describe("cloud error mapping", () => {
     expect(he.whatDoYouWant).toBe("מה תרצו לעשות?");
     expect(he.sendNewFile).toBe("שליחת קובץ חדש");
     expect(he.createExternalLink).toBe("יצירת קישור חיצוני");
+    expect(he.externalLinkHint).toBe("צרו קישור מאובטח להורדת קובץ מחוץ לארגון.");
+    expect(he.linkCreate).toBe("צור קישור");
+    expect(he.linkReadyTitle).toBe("הקישור מוכן");
+    expect(he.linkPreparing).toBe("מעלה ומכין קישור…");
+    expect(he.linkAccessAnyone).toBe("כל מי שקיבל את הקישור");
+    expect(he.linkOrgPolicyIdentified).toBe("מדיניות הארגון מאפשרת שיתוף עם אנשים מזוהים בלבד.");
     expect(he.taskDescriptionLabel).toBe("תיאור המשימה");
     expect(he.toAtLabel).toBe("@ אל");
     expect(he.dueOnCompleteLabel).toBe("מועד לביצוע");
@@ -152,6 +158,7 @@ describe("cloud error mapping", () => {
     expect(he.fileRequired).toBe("נדרש להעלות קובץ");
     expect(he.recipientRequired).toBe("נדרש לבחור איש קשר");
     expect(he.taskDescriptionRequired).toBe("נדרש להזין תיאור משימה");
+    expect(he.fileDescriptionRequired).toBe("נדרש להזין תיאור קובץ");
     expect(he.fileTooLarge).toBe("הקובץ גדול מדי");
     expect(he.sendFailed).toBe("השליחה נכשלה");
     expect(he.downloadFailed).toBe("ההורדה נכשלה");

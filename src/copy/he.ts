@@ -42,6 +42,50 @@ export const he = {
   whatDoYouWant: "מה תרצו לעשות?",
   sendNewFile: "שליחת קובץ חדש",
   createExternalLink: "יצירת קישור חיצוני",
+  externalLinkHint: "צרו קישור מאובטח להורדת קובץ מחוץ לארגון.",
+  chooseFromComputer: "בחר מהמחשב",
+  chooseFromCloud: "בחר מהענן",
+  replaceFile: "החלפת קובץ",
+  linkFileSavedInOrg: "הקובץ יישמר ב־{provider} של הארגון",
+  providerSharePoint: "SharePoint",
+  providerMicrosoft365: "Microsoft 365",
+  providerGoogleWorkspace: "Google Workspace",
+  providerDropbox: "Dropbox",
+  linkWhoCanOpen: "מי יכול לפתוח את הקישור?",
+  linkAccessAnyone: "כל מי שקיבל את הקישור",
+  linkAccessAnyoneHint: "פתיחה והורדה ללא התחברות.",
+  linkAccessPeople: "אנשים מסוימים",
+  linkAccessPeopleHint: "גישה רק לכתובות האימייל שתגדירו.",
+  linkPeopleLabel: "למי לאפשר גישה?",
+  linkPeoplePlaceholder: "name@company.com",
+  linkPeopleHint: "ייתכן שהנמענים יתבקשו להזדהות אצל ספק האחסון.",
+  linkEmailInvalid: "כתובת האימייל אינה תקינה",
+  linkOrgPolicyIdentified: "מדיניות הארגון מאפשרת שיתוף עם אנשים מזוהים בלבד.",
+  linkExpiryLabel: "לכמה זמן הקישור יהיה פעיל?",
+  linkExpiryOneDay: "יום אחד",
+  linkExpiryThreeDays: "3 ימים",
+  linkExpirySevenDays: "7 ימים",
+  linkExpiryCustom: "תאריך מותאם",
+  linkExpiryCustomLabel: "תאריך ושעה",
+  linkExpirySummary: "הקישור יפוג ב־{date} בשעה {time}",
+  linkCreate: "צור קישור",
+  linkPreparing: "מעלה ומכין קישור…",
+  linkReadyTitle: "הקישור מוכן",
+  linkUrlLabel: "כתובת הקישור",
+  linkCopy: "העתק קישור",
+  linkCopied: "הקישור הועתק",
+  linkOpen: "פתח קישור",
+  linkRevoke: "בטל קישור",
+  linkCreateAnother: "צור קישור נוסף",
+  linkRevokeConfirm: "לבטל את הקישור?",
+  linkRevokeConfirmBody: "הקישור לא יוכל יותר לפתוח את הקובץ.",
+  linkConfirmRevoke: "בטל קישור",
+  linkAccessPeopleCount: "גישה ל־{n} אנשים",
+  linkAccessPeopleOne: "גישה לאדם אחד",
+  linkNotDownloaded: "טרם הורד",
+  linkStatusLabel: "מצב",
+  linkExpiresLabel: "תוקף",
+  linkAccessSummaryLabel: "סוג גישה",
   sendRequest: "שלח בקשה",
   send: "שלח",
   recipientLabel: "נמען",
@@ -222,6 +266,7 @@ export const he = {
   recipientRequired: "נדרש לבחור איש קשר",
   fileRequired: "נדרש להעלות קובץ",
   taskDescriptionRequired: "נדרש להזין תיאור משימה",
+  fileDescriptionRequired: "נדרש להזין תיאור קובץ",
   instructionTooLong: "ההנחיה ארוכה מדי",
   revisionNoteTooLong: "הערת התיקון ארוכה מדי",
   autostartLabel: "הפעל את FileRelay עם Windows",
@@ -409,4 +454,19 @@ export function cloudErrorHint(code: CloudErrorCode): string | null {
     return he.authStoreCorruptHint;
   }
   return null;
+}
+
+export function linkFileSavedInOrgLabel(provider: string): string {
+  return he.linkFileSavedInOrg.replace("{provider}", provider);
+}
+
+export function linkExpirySummaryLabel(date: string, time: string): string {
+  return he.linkExpirySummary.replace("{date}", date).replace("{time}", time);
+}
+
+export function linkAccessPeopleCountLabel(count: number): string {
+  if (count === 1) {
+    return he.linkAccessPeopleOne;
+  }
+  return he.linkAccessPeopleCount.replace("{n}", String(count));
 }

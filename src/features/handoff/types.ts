@@ -191,7 +191,7 @@ export type LocalWorkState =
   | "retry"
   | "aborting";
 
-export type FormMode = "send" | "file_request";
+export type FormMode = "send" | "file_request" | "external_link";
 export type SendAction = "approval" | "review" | "update";
 
 export type StartedReturn = {

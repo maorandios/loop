@@ -48,6 +48,8 @@ import {
   validateRevisionNote,
   validateSendForm,
 } from "../handoff/sendForm";
+import { designLinkPolicy, designLinkStage } from "../link/designLink";
+import { ExternalLinkScreen } from "../link/ExternalLinkScreen";
 import type {
   FormMode,
   HandoffRecord,
@@ -129,6 +131,8 @@ type WorkspaceReadyScreenProps = {
   reminderNotice?: string | null;
   actionBusyId?: string | null;
   connected?: boolean;
+  externalLinkPolicy?: "anyone" | "identified";
+  externalLinkStage?: "form" | "uploading" | "success";
 };
 
 function memberName(members: WorkspaceMember[], memberId: string): string {
@@ -422,6 +426,8 @@ function WorkspaceReadyView({
   localStates = {},
   reminderNotice = null,
   actionBusyId = null,
+  externalLinkPolicy,
+  externalLinkStage,
 }: WorkspaceReadyScreenProps) {
   const designInbox = useMemo(() => {
     if (!shouldUseDesignCards() || !currentMemberId) {
@@ -967,7 +973,7 @@ function WorkspaceReadyView({
       return he.fileRequired;
     }
     if (code === "instruction_required") {
-      return formMode === "send" ? he.taskDescriptionRequired : he.cloudError.instruction_required;
+      return formMode === "send" ? he.taskDescriptionRequired : he.fileDescriptionRequired;
     }
     if (code === "instruction_too_long") {
       return he.instructionTooLong;
@@ -992,10 +998,7 @@ function WorkspaceReadyView({
   }
 
   function onSend() {
-    const selected =
-      formMode === "send"
-        ? resolveSendRecipient()
-        : recipientId || others[0]?.id || null;
+    const selected = resolveSendRecipient();
     if (formMode === "file_request") {
       const problem = validateFileRequestForm({
         recipientMemberId: selected,
@@ -2358,7 +2361,7 @@ function WorkspaceReadyView({
       {composeOpen && !waiting && onSubmitSend ? (
         <div
           className={`fr-overlay${composeLeaving ? " fr-leaving" : ""}${
-            composeStep === "choose" ? " fr-overlay-choose" : formMode === "send" ? " fr-overlay-send" : ""
+            composeStep === "choose" ? " fr-overlay-choose" : " fr-overlay-send"
           }`}
           role="presentation"
         >
@@ -2404,7 +2407,14 @@ function WorkspaceReadyView({
                   <FluentIcon name="mailInboxArrowDown" size={32} />
                   <span className="fr-compose-card-label">{he.requestFile}</span>
                 </button>
-                <button type="button" className="fr-compose-card">
+                <button
+                  type="button"
+                  className="fr-compose-card"
+                  onClick={() => {
+                    setFormMode("external_link");
+                    setComposeStep("form");
+                  }}
+                >
                   <FluentIcon name="link" size={32} />
                   <span className="fr-compose-card-label">{he.createExternalLink}</span>
                 </button>
@@ -2439,7 +2449,9 @@ function WorkspaceReadyView({
               {he.sendNewFile}
             </h2>
             <div
-              ref={composeFirstRef}
+              ref={(node) => {
+                composeFirstRef.current = node;
+              }}
               className={`fr-dropzone${sendDropActive ? " fr-drop-active" : ""}`}
               role="button"
               tabIndex={0}
@@ -2648,15 +2660,15 @@ function WorkspaceReadyView({
             </div>
             </div>
           </div>
-          ) : (
+          ) : formMode === "file_request" ? (
           <div
             ref={composeRef}
-            className="fr-sheet"
+            className="fr-compose-send fr-compose-request"
             role="dialog"
             aria-modal="true"
             aria-labelledby="compose-title"
           >
-            <div className="fr-sheet-head">
+            <div className="fr-compose-form-nav">
               <button type="button" className="fr-header-back" onClick={backToChooser}>
                 <FluentIcon name="chevronLeft" rtlFlip />
                 {he.back}
@@ -2671,64 +2683,127 @@ function WorkspaceReadyView({
               </button>
             </div>
             <PushBanner open={pushOpen} notice={pushNotice} onDismiss={dismissPush} />
-            <h2 id="compose-title" className="fr-sheet-title">
-              <FluentIcon name="mailInboxArrowDown" size={18} />
-              {he.requestFile}
-            </h2>
-            <label className="fr-field-wrap">
-              <span className="fr-label">{he.recipientLabel}</span>
-              <select
-                ref={composeFirstRef}
-                className="fr-select"
-                value={recipientId || others[0]?.id || ""}
-                onChange={(event) => {
-                  setRecipientId(event.target.value);
-                }}
-              >
-                {others.length === 0 ? <option value="">{he.chooseRecipient}</option> : null}
-                {others.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.displayName}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="fr-field-wrap">
-              <span className="fr-label">{he.fileDescriptionLabel}</span>
-              <textarea
-                className="fr-area"
-                maxLength={INSTRUCTION_MAX}
-                value={instruction}
-                onChange={(event) => {
-                  setInstruction(event.target.value);
-                }}
-              />
-            </label>
-            <label className="fr-field-wrap">
-              <span className="fr-label">{he.dueOnLabel}</span>
-              <input
-                type="date"
-                className="fr-field"
-                value={dueOn}
-                onChange={(event) => {
-                  setDueOn(event.target.value);
-                }}
-              />
-            </label>
-            <div className="fr-sheet-actions">
-              <button type="button" className="fr-btn fr-btn-secondary" onClick={closeCompose}>
-                {he.cancel}
-              </button>
-              <button
-                type="button"
-                className="fr-btn fr-btn-primary"
-                disabled={sending}
-                onClick={onSend}
-              >
-                {he.sendRequest}
-              </button>
+            <div className="fr-compose-send-body">
+              <h2 id="compose-title" className="fr-compose-form-title">
+                <FluentIcon name="mailInboxArrowDown" size={18} />
+                {he.requestFile}
+              </h2>
+              <div className="fr-field-wrap fr-recipient-wrap" ref={recipientWrapRef}>
+                <label className="fr-label" htmlFor="request-recipient">
+                  {he.toAtLabel}
+                </label>
+                <input
+                  id="request-recipient"
+                  ref={(node) => {
+                    composeFirstRef.current = node;
+                  }}
+                  type="text"
+                  className="fr-field"
+                  role="combobox"
+                  autoComplete="off"
+                  aria-expanded={recipientOpen && recipientMatches.length > 0}
+                  aria-controls="request-recipient-list"
+                  aria-autocomplete="list"
+                  placeholder={he.chooseRecipient}
+                  value={recipientQuery}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setRecipientQuery(value);
+                    setRecipientOpen(true);
+                    const exact = others.find((member) => memberMatchesExact(member, value));
+                    setRecipientId(exact?.id ?? "");
+                  }}
+                  onFocus={() => {
+                    if (recipientQuery.trim()) {
+                      setRecipientOpen(true);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      setRecipientOpen(false);
+                    }
+                    if (event.key === "Enter" && recipientMatches.length === 1) {
+                      event.preventDefault();
+                      const match = recipientMatches[0]!;
+                      setRecipientId(match.id);
+                      setRecipientQuery(memberRecipientLabel(match));
+                      setRecipientOpen(false);
+                    }
+                  }}
+                />
+                {recipientOpen && recipientMatches.length > 0 ? (
+                  <div id="request-recipient-list" className="fr-suggest" role="listbox">
+                    {recipientMatches.map((member) => (
+                      <button
+                        key={member.id}
+                        type="button"
+                        className="fr-suggest-item"
+                        role="option"
+                        aria-selected={member.id === recipientId}
+                        onClick={() => {
+                          setRecipientId(member.id);
+                          setRecipientQuery(memberRecipientLabel(member));
+                          setRecipientOpen(false);
+                        }}
+                      >
+                        {memberRecipientLabel(member)}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <label className="fr-field-wrap">
+                <span className="fr-label fr-label-icon">
+                  <FluentIcon name="commentArrowLeft" />
+                  {he.fileDescriptionLabel}
+                </span>
+                <textarea
+                  className="fr-area"
+                  maxLength={INSTRUCTION_MAX}
+                  value={instruction}
+                  onChange={(event) => {
+                    setInstruction(event.target.value);
+                  }}
+                />
+              </label>
+              <label className="fr-field-wrap">
+                <span className="fr-label fr-label-icon">
+                  <FluentIcon name="calendarArrowRepeat" />
+                  {he.dueOnLabel}
+                </span>
+                <input
+                  type="date"
+                  className="fr-field fr-date"
+                  value={dueOn}
+                  onChange={(event) => {
+                    setDueOn(event.target.value);
+                  }}
+                />
+              </label>
+              <div className="fr-compose-form-actions">
+                <button
+                  type="button"
+                  className="fr-btn fr-btn-primary"
+                  disabled={sending}
+                  onClick={onSend}
+                >
+                  {he.sendRequest}
+                </button>
+                <button type="button" className="fr-btn fr-btn-secondary" onClick={closeCompose}>
+                  {he.cancel}
+                </button>
+              </div>
             </div>
           </div>
+          ) : (
+            <div ref={composeRef} className="fr-compose-link-host">
+              <ExternalLinkScreen
+                policy={designLinkPolicy(externalLinkPolicy)}
+                initialStage={designLinkStage(externalLinkStage)}
+                onBack={backToChooser}
+                onClose={closeCompose}
+              />
+            </div>
           )}
         </div>
       ) : null}
