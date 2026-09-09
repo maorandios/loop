@@ -88,6 +88,7 @@ pub fn run() {
             auth_store::auth_storage_ensure,
             auth_store::auth_storage_health,
             transfer::pick_send_file,
+            transfer::pick_send_file_from_path,
             transfer::cancel_send_selection,
             transfer::tus_upload_v1,
             transfer::prepare_result_snapshot_from_selection,

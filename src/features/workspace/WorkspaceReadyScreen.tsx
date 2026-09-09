@@ -92,6 +92,7 @@ type WorkspaceReadyScreenProps = {
   autostartEnabled?: boolean;
   onToggleAutostart?: (enabled: boolean) => void | Promise<void>;
   onPickFile?: () => void | Promise<void>;
+  onPickDroppedFile?: (path: string) => void | Promise<void>;
   onCancelSend?: () => void | Promise<void>;
   onSubmitSend?: (input: {
     recipientMemberId: string;
@@ -137,6 +138,28 @@ function memberName(members: WorkspaceMember[], memberId: string): string {
 function memberEmail(members: WorkspaceMember[], memberId: string): string | null {
   const email = members.find((member) => member.id === memberId)?.email?.trim();
   return email || null;
+}
+
+function memberRecipientLabel(member: WorkspaceMember): string {
+  const email = member.email?.trim();
+  return email ? `${member.displayName} • ${email}` : member.displayName;
+}
+
+function memberMatchesExact(member: WorkspaceMember, value: string): boolean {
+  const typed = value.trim();
+  return typed.length > 0 && (member.displayName === typed || memberRecipientLabel(member) === typed);
+}
+
+function memberMatchesQuery(member: WorkspaceMember, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  if (!needle) {
+    return false;
+  }
+  return (
+    member.displayName.toLowerCase().includes(needle) ||
+    (member.email ?? "").toLowerCase().includes(needle) ||
+    memberRecipientLabel(member).toLowerCase().includes(needle)
+  );
 }
 
 function localFor(inbox: InboxLocalEntry[], handoffId: string): InboxLocalEntry[] {
@@ -208,6 +231,14 @@ function firstDroppedName(files: FileList | null | undefined): string | null {
   return name ? name : null;
 }
 
+function droppedFilePath(file: File | undefined): string | null {
+  if (!file) {
+    return null;
+  }
+  const path = "path" in file ? String((file as File & { path?: string }).path ?? "").trim() : "";
+  return path || null;
+}
+
 export const PUSH_DURATION_MS = 3000;
 const PUSH_SLIDE_MS = 240;
 const SCREEN_SLIDE_MS = 240;
@@ -219,9 +250,89 @@ type PushNotice = {
   text: string;
   tone: PushTone;
   icon: IconName;
+  sticky?: boolean;
+  source?: "form" | "system";
   actionLabel?: string;
   onAction?: () => void;
 };
+
+function sendProgressPushText(progress: SendProgress): string | null {
+  if (progress === "sending") {
+    return he.handoffStatus.sending;
+  }
+  if (progress === "uploading") {
+    return he.uploadingFile;
+  }
+  if (progress === "finalizing") {
+    return he.finishingRequest;
+  }
+  return null;
+}
+
+function PushBanner({
+  open,
+  notice,
+  onDismiss,
+}: {
+  open: boolean;
+  notice: PushNotice | null;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className={`fr-push-slot${open ? " fr-open" : ""}`}>
+      <div className="fr-push-slot-inner">
+        {notice ? (
+          <div className="fr-push-wrap">
+            <div
+              className="fr-push"
+              data-tone={notice.tone}
+              role={notice.tone === "danger" ? "alert" : "status"}
+            >
+              <div className="fr-push-body">
+                <FluentIcon name={notice.icon} size={16} />
+                <p className="fr-push-text">{notice.text}</p>
+                {notice.actionLabel && notice.onAction ? (
+                  <button
+                    type="button"
+                    className="fr-push-action"
+                    onClick={() => {
+                      notice.onAction?.();
+                      onDismiss();
+                    }}
+                  >
+                    {notice.actionLabel}
+                  </button>
+                ) : null}
+                {notice.sticky ? (
+                  <span className="fr-push-close" aria-hidden="true" />
+                ) : (
+                  <button
+                    type="button"
+                    className="fr-icon-btn fr-push-close"
+                    aria-label={he.closeDialog}
+                    onClick={onDismiss}
+                  >
+                    <FluentIcon name="dismiss" />
+                  </button>
+                )}
+              </div>
+              <div className="fr-push-progress" aria-hidden="true">
+                <span
+                  key={notice.id}
+                  className="fr-push-progress-bar"
+                  data-kind={notice.sticky ? "indeterminate" : "timer"}
+                  style={
+                    notice.sticky ? undefined : { animationDuration: `${PUSH_DURATION_MS}ms` }
+                  }
+                />
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 function motionDuration(ms: number): number {
   if (import.meta.env.MODE === "test") {
@@ -285,6 +396,7 @@ function WorkspaceReadyView({
   autostartEnabled = false,
   onToggleAutostart,
   onPickFile,
+  onPickDroppedFile,
   onCancelSend,
   onSubmitSend,
   onSubmitFileRequest,
@@ -367,16 +479,19 @@ function WorkspaceReadyView({
   const openedFromCard = useRef<HTMLElement | null>(null);
   const openedFromId = useRef<string | null>(null);
   const composeRef = useRef<HTMLDivElement | null>(null);
-  const composeFirstRef = useRef<HTMLSelectElement | null>(null);
+  const composeFirstRef = useRef<HTMLElement | null>(null);
+  const composeTitleRef = useRef<HTMLHeadingElement | null>(null);
   const settingsScreenRef = useRef<HTMLElement | null>(null);
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const composeTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const [recipientId, setRecipientId] = useState(others[0]?.id ?? "");
+  const recipientWrapRef = useRef<HTMLDivElement | null>(null);
+  const [recipientId, setRecipientId] = useState("");
+  const [recipientQuery, setRecipientQuery] = useState("");
+  const [recipientOpen, setRecipientOpen] = useState(false);
   const [formMode, setFormMode] = useState<FormMode>("send");
   const [requestedAction, setRequestedAction] = useState<SendAction>("approval");
   const [instruction, setInstruction] = useState("");
   const [dueOn, setDueOn] = useState("");
-  const [formError, setFormError] = useState<string | null>(null);
   const [resultNoteFor, setResultNoteFor] = useState<string | null>(null);
   const [resultNote, setResultNote] = useState("");
   const [resultNoteError, setResultNoteError] = useState<string | null>(null);
@@ -402,6 +517,8 @@ function WorkspaceReadyView({
   const [revisionNote, setRevisionNote] = useState("");
   const [revisionError, setRevisionError] = useState<string | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
+  const [composeStep, setComposeStep] = useState<"choose" | "form">("choose");
+  const [sendDropActive, setSendDropActive] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [pushNotice, setPushNotice] = useState<PushNotice | null>(null);
   const [pushOpen, setPushOpen] = useState(false);
@@ -433,6 +550,7 @@ function WorkspaceReadyView({
     tone: PushTone = "accent",
     icon: IconName = "alert",
     action?: { label: string; onClick: () => void },
+    options?: { sticky?: boolean; source?: "form" | "system" },
   ) {
     window.clearTimeout(pushTimer.current);
     window.clearTimeout(pushMotionTimer.current);
@@ -444,6 +562,8 @@ function WorkspaceReadyView({
       text,
       tone,
       icon,
+      sticky: options?.sticky ?? false,
+      source: options?.source ?? "system",
       actionLabel: action?.label,
       onAction: action?.onClick,
     });
@@ -652,7 +772,7 @@ function WorkspaceReadyView({
   ]);
 
   useEffect(() => {
-    if (!pushNotice) {
+    if (!pushNotice || pushNotice.sticky) {
       return;
     }
     window.clearTimeout(pushTimer.current);
@@ -682,6 +802,17 @@ function WorkspaceReadyView({
     }
     showPush(designNotice, "success", "checkmarkCircle");
   }, [designNotice]);
+
+  useEffect(() => {
+    const text = sendProgressPushText(sendProgress);
+    if (text && composeOpen && composeStep === "form") {
+      showPush(text, "accent", "arrowUpload", undefined, { sticky: true, source: "form" });
+      return;
+    }
+    if (pushNoticeRef.current?.sticky && sendProgress !== "failed") {
+      dismissPush();
+    }
+  }, [composeOpen, composeStep, sendProgress]);
 
   useEffect(() => {
     if (!showLoadBanner) {
@@ -716,9 +847,60 @@ function WorkspaceReadyView({
 
   useEffect(() => {
     if (composeOpen && !composeLeaving) {
-      composeFirstRef.current?.focus();
+      if (composeStep === "form") {
+        composeFirstRef.current?.focus();
+      } else {
+        composeTitleRef.current?.focus();
+      }
     }
-  }, [composeOpen, composeLeaving]);
+  }, [composeOpen, composeLeaving, composeStep]);
+
+  useEffect(() => {
+    if (!composeOpen || composeLeaving || composeStep !== "form" || formMode !== "send") {
+      return;
+    }
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/webview")
+      .then(async (api) => {
+        if (cancelled) {
+          return;
+        }
+        unlisten = await api.getCurrentWebview().onDragDropEvent((event) => {
+          if (event.payload.type === "drop") {
+            setSendDropActive(false);
+            const path = event.payload.paths[0];
+            if (path) {
+              void onPickDroppedFile?.(path);
+            }
+            return;
+          }
+          if (event.payload.type === "leave") {
+            setSendDropActive(false);
+            return;
+          }
+          setSendDropActive(true);
+        });
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [composeLeaving, composeOpen, composeStep, formMode, onPickDroppedFile]);
+
+  useEffect(() => {
+    if (!recipientOpen) {
+      return;
+    }
+    function onPointer(event: MouseEvent) {
+      if (!recipientWrapRef.current?.contains(event.target as Node)) {
+        setRecipientOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointer);
+    return () => window.removeEventListener("mousedown", onPointer);
+  }, [recipientOpen]);
 
   useEffect(() => {
     if (detailId || settingsOpen) {
@@ -785,7 +967,7 @@ function WorkspaceReadyView({
       return he.fileRequired;
     }
     if (code === "instruction_required") {
-      return he.cloudError.instruction_required;
+      return formMode === "send" ? he.taskDescriptionRequired : he.cloudError.instruction_required;
     }
     if (code === "instruction_too_long") {
       return he.instructionTooLong;
@@ -793,18 +975,37 @@ function WorkspaceReadyView({
     return null;
   }
 
+  function resolveSendRecipient(): string | null {
+    if (recipientId && others.some((member) => member.id === recipientId)) {
+      return recipientId;
+    }
+    const typed = recipientQuery.trim();
+    if (!typed) {
+      return null;
+    }
+    const exact = others.find((member) => memberMatchesExact(member, typed));
+    if (exact) {
+      return exact.id;
+    }
+    const matches = others.filter((member) => memberMatchesQuery(member, typed));
+    return matches.length === 1 ? matches[0]!.id : null;
+  }
+
   function onSend() {
-    const selected = recipientId || others[0]?.id || null;
+    const selected =
+      formMode === "send"
+        ? resolveSendRecipient()
+        : recipientId || others[0]?.id || null;
     if (formMode === "file_request") {
       const problem = validateFileRequestForm({
         recipientMemberId: selected,
         instruction,
       });
       if (problem || !selected) {
-        setFormError(sendErrorLabel(problem));
+        const label = sendErrorLabel(problem) ?? he.recipientRequired;
+        showPush(label, "danger", "alert", undefined, { source: "form" });
         return;
       }
-      setFormError(null);
       void onSubmitFileRequest?.({
         recipientMemberId: selected,
         instruction: instruction.trim(),
@@ -818,10 +1019,10 @@ function WorkspaceReadyView({
       picked: pickedFile,
     });
     if (problem || !selected) {
-      setFormError(sendErrorLabel(problem));
+      const label = sendErrorLabel(problem) ?? he.recipientRequired;
+      showPush(label, "danger", "alert", undefined, { source: "form" });
       return;
     }
-    setFormError(null);
     void onSubmitSend?.({
       recipientMemberId: selected,
       instruction: instruction.trim(),
@@ -833,13 +1034,19 @@ function WorkspaceReadyView({
   function onClearForm() {
     setInstruction("");
     setDueOn("");
-    setFormError(null);
+    setRecipientQuery("");
+    setRecipientId("");
+    setRecipientOpen(false);
     void onCancelSend?.();
   }
 
   function closeCompose() {
+    if (pushNoticeRef.current?.source === "form") {
+      dismissPush();
+    }
     const finish = () => {
       onClearForm();
+      setComposeStep("choose");
       setComposeOpen(false);
       setComposeLeaving(false);
       composeTriggerRef.current?.focus();
@@ -850,6 +1057,17 @@ function WorkspaceReadyView({
     }
     setComposeLeaving(true);
     runAfterMotion(260, finish);
+  }
+
+  function backToChooser() {
+    if (pushNoticeRef.current?.source === "form") {
+      dismissPush();
+    }
+    setSendDropActive(false);
+    setRecipientId("");
+    setRecipientQuery("");
+    setRecipientOpen(false);
+    setComposeStep("choose");
   }
 
   function openDetail(id: string, from?: HTMLElement | null) {
@@ -1031,8 +1249,10 @@ function WorkspaceReadyView({
     setSettingsOpen(true);
   }
 
+  const recipientMatches = others.filter((member) => memberMatchesQuery(member, recipientQuery));
+
   return (
-    <main className={`fr-shell${drawerScrimShown ? " fr-drawer-open" : ""}`}>
+    <main className={`fr-shell${drawerScrimShown ? " fr-drawer-open" : ""}${composeOpen ? " fr-compose-open" : ""}`}>
       <NavigationRail
         primaryView={primaryView}
         settingsOpen={settingsOpen}
@@ -1047,20 +1267,9 @@ function WorkspaceReadyView({
         {detailCard ? (
           <div className="fr-detail-head">
             <button type="button" className="fr-header-back" onClick={closeDetail}>
-              <FluentIcon name="chevronLeft" />
+              <FluentIcon name="chevronLeft" rtlFlip />
               {he.back}
             </button>
-            <p dir="auto" className="fr-detail-head-title">
-              {(() => {
-                const presented = presentHandoffCard(
-                  detailCard,
-                  currentMemberId,
-                  (id) => memberName(members, id),
-                  { useMe: false, emailOf: (id) => memberEmail(members, id) },
-                );
-                return presented.title ?? presented.subjectText ?? presented.headline;
-              })()}
-            </p>
           </div>
         ) : settingsOpen ? null : (
           <WorkspaceToolbar
@@ -1107,6 +1316,7 @@ function WorkspaceReadyView({
                   aria-label={he.newRequest}
                   ref={composeTriggerRef}
                   onClick={() => {
+                    setComposeStep("choose");
                     setComposeOpen(true);
                   }}
                 >
@@ -1119,51 +1329,11 @@ function WorkspaceReadyView({
           />
         )}
       </header>
-      <div className={`fr-push-slot${pushOpen ? " fr-open" : ""}`}>
-        <div className="fr-push-slot-inner">
-          {pushNotice ? (
-            <div className="fr-push-wrap">
-              <div
-                className="fr-push"
-                data-tone={pushNotice.tone}
-                role={pushNotice.tone === "danger" ? "alert" : "status"}
-              >
-                <div className="fr-push-body">
-                  <FluentIcon name={pushNotice.icon} size={16} />
-                  <p className="fr-push-text">{pushNotice.text}</p>
-                  {pushNotice.actionLabel && pushNotice.onAction ? (
-                    <button
-                      type="button"
-                      className="fr-push-action"
-                      onClick={() => {
-                        pushNotice.onAction?.();
-                        dismissPush();
-                      }}
-                    >
-                      {pushNotice.actionLabel}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="fr-icon-btn fr-push-close"
-                    aria-label={he.closeDialog}
-                    onClick={dismissPush}
-                  >
-                    <FluentIcon name="dismiss" />
-                  </button>
-                </div>
-                <div className="fr-push-progress" aria-hidden="true">
-                  <span
-                    key={pushNotice.id}
-                    className="fr-push-progress-bar"
-                    style={{ animationDuration: `${PUSH_DURATION_MS}ms` }}
-                  />
-                </div>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      </div>
+      <PushBanner
+        open={pushOpen && !composeOpen}
+        notice={composeOpen ? null : pushNotice}
+        onDismiss={dismissPush}
+      />
       </div>
 
       <div className="fr-main">
@@ -2186,19 +2356,73 @@ function WorkspaceReadyView({
       </div>
 
       {composeOpen && !waiting && onSubmitSend ? (
-        <div className={`fr-overlay${composeLeaving ? " fr-leaving" : ""}`} role="presentation">
+        <div
+          className={`fr-overlay${composeLeaving ? " fr-leaving" : ""}${
+            composeStep === "choose" ? " fr-overlay-choose" : formMode === "send" ? " fr-overlay-send" : ""
+          }`}
+          role="presentation"
+        >
+          {composeStep === "choose" ? (
+            <div
+              ref={composeRef}
+              className="fr-compose-choose"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="compose-title"
+            >
+              <button
+                type="button"
+                className="fr-icon-btn fr-compose-close"
+                aria-label={he.closeDialog}
+                onClick={closeCompose}
+              >
+                <FluentIcon name="dismiss" />
+              </button>
+              <h2 id="compose-title" className="fr-compose-question" tabIndex={-1} ref={composeTitleRef}>
+                {he.whatDoYouWant}
+              </h2>
+              <div className="fr-compose-cards">
+                <button
+                  type="button"
+                  className="fr-compose-card"
+                  onClick={() => {
+                    setFormMode("send");
+                    setComposeStep("form");
+                  }}
+                >
+                  <FluentIcon name="send" size={20} className="fr-compose-send-icon" />
+                  <span className="fr-compose-card-label">{he.sendNewFile}</span>
+                </button>
+                <button
+                  type="button"
+                  className="fr-compose-card"
+                  onClick={() => {
+                    setFormMode("file_request");
+                    setComposeStep("form");
+                  }}
+                >
+                  <FluentIcon name="mailInboxArrowDown" size={32} />
+                  <span className="fr-compose-card-label">{he.requestFile}</span>
+                </button>
+                <button type="button" className="fr-compose-card">
+                  <FluentIcon name="link" size={32} />
+                  <span className="fr-compose-card-label">{he.createExternalLink}</span>
+                </button>
+              </div>
+            </div>
+          ) : formMode === "send" ? (
           <div
             ref={composeRef}
-            className="fr-sheet"
+            className="fr-compose-send"
             role="dialog"
             aria-modal="true"
             aria-labelledby="compose-title"
           >
-            <div className="fr-sheet-head">
-              <h2 id="compose-title" className="fr-sheet-title">
-                <FluentIcon name="add" size={18} />
-                {he.newRequest}
-              </h2>
+            <div className="fr-compose-form-nav">
+              <button type="button" className="fr-header-back" onClick={backToChooser}>
+                <FluentIcon name="chevronLeft" rtlFlip />
+                {he.back}
+              </button>
               <button
                 type="button"
                 className="fr-icon-btn"
@@ -2208,32 +2432,249 @@ function WorkspaceReadyView({
                 <FluentIcon name="dismiss" />
               </button>
             </div>
-            <div className="fr-choice">
-              <label>
-                <input
-                  type="radio"
-                  name="form-mode"
-                  checked={formMode === "send"}
-                  onChange={() => {
-                    setFormMode("send");
-                    setFormError(null);
-                  }}
-                />
-                <span>{he.sendFile}</span>
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  name="form-mode"
-                  checked={formMode === "file_request"}
-                  onChange={() => {
-                    setFormMode("file_request");
-                    setFormError(null);
-                  }}
-                />
-                <span>{he.requestFile}</span>
-              </label>
+            <PushBanner open={pushOpen} notice={pushNotice} onDismiss={dismissPush} />
+            <div className="fr-compose-send-body">
+            <h2 id="compose-title" className="fr-compose-form-title">
+              <FluentIcon name="send" size={18} className="fr-compose-send-icon" />
+              {he.sendNewFile}
+            </h2>
+            <div
+              ref={composeFirstRef}
+              className={`fr-dropzone${sendDropActive ? " fr-drop-active" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-label={he.chooseFile}
+              onClick={() => {
+                void onPickFile?.();
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void onPickFile?.();
+                }
+              }}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setSendDropActive(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+                  setSendDropActive(false);
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setSendDropActive(false);
+                const path = droppedFilePath(event.dataTransfer.files[0]);
+                if (path) {
+                  void onPickDroppedFile?.(path);
+                  return;
+                }
+                void onPickFile?.();
+              }}
+            >
+              {pickedFile ? (
+                <span className="fr-dropzone-picked">
+                  <FileName name={pickedFile.originalFilename} className="fr-dropzone-name" />
+                  <button
+                    type="button"
+                    className="fr-icon-btn"
+                    aria-label={he.removeFile}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void onCancelSend?.();
+                    }}
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                    }}
+                  >
+                    <FluentIcon name="delete" />
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <FluentIcon name="documentQueueAdd" size={20} className="fr-dropzone-hero" />
+                  <span className="fr-dropzone-hint">{he.dropHint}</span>
+                  <span className="fr-dropzone-browse">{he.browseFromExplorer}</span>
+                </>
+              )}
             </div>
+            <div className="fr-field-wrap fr-recipient-wrap" ref={recipientWrapRef}>
+              <label className="fr-label" htmlFor="compose-recipient">
+                {he.toAtLabel}
+              </label>
+              <input
+                id="compose-recipient"
+                type="text"
+                className="fr-field"
+                role="combobox"
+                autoComplete="off"
+                aria-expanded={recipientOpen && recipientMatches.length > 0}
+                aria-controls="compose-recipient-list"
+                aria-autocomplete="list"
+                placeholder={he.chooseRecipient}
+                value={recipientQuery}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setRecipientQuery(value);
+                  setRecipientOpen(true);
+                  const exact = others.find((member) => memberMatchesExact(member, value));
+                  setRecipientId(exact?.id ?? "");
+                }}
+                onFocus={() => {
+                  if (recipientQuery.trim()) {
+                    setRecipientOpen(true);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    setRecipientOpen(false);
+                  }
+                  if (event.key === "Enter" && recipientMatches.length === 1) {
+                    event.preventDefault();
+                    const match = recipientMatches[0]!;
+                    setRecipientId(match.id);
+                    setRecipientQuery(memberRecipientLabel(match));
+                    setRecipientOpen(false);
+                  }
+                }}
+              />
+              {recipientOpen && recipientMatches.length > 0 ? (
+                <div id="compose-recipient-list" className="fr-suggest" role="listbox">
+                  {recipientMatches.map((member) => (
+                    <button
+                      key={member.id}
+                      type="button"
+                      className="fr-suggest-item"
+                      role="option"
+                      aria-selected={member.id === recipientId}
+                      onClick={() => {
+                        setRecipientId(member.id);
+                        setRecipientQuery(memberRecipientLabel(member));
+                        setRecipientOpen(false);
+                      }}
+                    >
+                      {memberRecipientLabel(member)}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <fieldset className="fr-field-wrap">
+              <legend className="fr-label fr-label-icon">
+                <FluentIcon name="windowBulletList" />
+                {he.requestTypeLabel}
+              </legend>
+              <div className="fr-choice">
+                <label>
+                  <input
+                    type="radio"
+                    name="requested-action"
+                    checked={requestedAction === "approval"}
+                    onChange={() => {
+                      setRequestedAction("approval");
+                    }}
+                  />
+                  <span>{he.approve}</span>
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="requested-action"
+                    checked={requestedAction === "review"}
+                    onChange={() => {
+                      setRequestedAction("review");
+                    }}
+                  />
+                  <span>{he.kindReview}</span>
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="requested-action"
+                    checked={requestedAction === "update"}
+                    onChange={() => {
+                      setRequestedAction("update");
+                    }}
+                  />
+                  <span>{he.kindUpdate}</span>
+                </label>
+              </div>
+            </fieldset>
+            <label className="fr-field-wrap">
+              <span className="fr-label fr-label-icon">
+                <FluentIcon name="commentArrowLeft" />
+                {he.taskDescriptionLabel}
+              </span>
+              <textarea
+                className="fr-area"
+                maxLength={INSTRUCTION_MAX}
+                value={instruction}
+                onChange={(event) => {
+                  setInstruction(event.target.value);
+                }}
+              />
+            </label>
+            <label className="fr-field-wrap">
+              <span className="fr-label fr-label-icon">
+                <FluentIcon name="calendarArrowRepeat" />
+                {he.dueOnCompleteLabel}
+              </span>
+              <input
+                type="date"
+                className="fr-field fr-date"
+                value={dueOn}
+                onChange={(event) => {
+                  setDueOn(event.target.value);
+                }}
+              />
+            </label>
+            <div className="fr-compose-form-actions">
+              <button
+                type="button"
+                className="fr-btn fr-btn-primary"
+                disabled={sending}
+                onClick={onSend}
+              >
+                {he.send}
+              </button>
+              <button type="button" className="fr-btn fr-btn-secondary" onClick={closeCompose}>
+                {he.cancel}
+              </button>
+            </div>
+            </div>
+          </div>
+          ) : (
+          <div
+            ref={composeRef}
+            className="fr-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="compose-title"
+          >
+            <div className="fr-sheet-head">
+              <button type="button" className="fr-header-back" onClick={backToChooser}>
+                <FluentIcon name="chevronLeft" rtlFlip />
+                {he.back}
+              </button>
+              <button
+                type="button"
+                className="fr-icon-btn"
+                aria-label={he.closeDialog}
+                onClick={closeCompose}
+              >
+                <FluentIcon name="dismiss" />
+              </button>
+            </div>
+            <PushBanner open={pushOpen} notice={pushNotice} onDismiss={dismissPush} />
+            <h2 id="compose-title" className="fr-sheet-title">
+              <FluentIcon name="mailInboxArrowDown" size={18} />
+              {he.requestFile}
+            </h2>
             <label className="fr-field-wrap">
               <span className="fr-label">{he.recipientLabel}</span>
               <select
@@ -2252,69 +2693,8 @@ function WorkspaceReadyView({
                 ))}
               </select>
             </label>
-            {formMode === "send" ? (
-              <>
-                <div className="fr-field-wrap">
-                  <span className="fr-label">{he.chooseFile}</span>
-                  <div className="fr-actions">
-                    <button
-                      type="button"
-                      className="fr-btn fr-btn-secondary"
-                      onClick={() => {
-                        void onPickFile?.();
-                      }}
-                    >
-                      {he.chooseFile}
-                    </button>
-                    {pickedFile ? (
-                      <FileName name={pickedFile.originalFilename} className="fr-file-name" />
-                    ) : null}
-                  </div>
-                </div>
-                <fieldset className="fr-field-wrap">
-                  <legend className="fr-label">{he.sendFile}</legend>
-                  <div className="fr-choice">
-                    <label>
-                      <input
-                        type="radio"
-                        name="requested-action"
-                        checked={requestedAction === "approval"}
-                        onChange={() => {
-                          setRequestedAction("approval");
-                        }}
-                      />
-                      <span>{he.actionForApproval}</span>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="requested-action"
-                        checked={requestedAction === "review"}
-                        onChange={() => {
-                          setRequestedAction("review");
-                        }}
-                      />
-                      <span>{he.actionForReview}</span>
-                    </label>
-                    <label>
-                      <input
-                        type="radio"
-                        name="requested-action"
-                        checked={requestedAction === "update"}
-                        onChange={() => {
-                          setRequestedAction("update");
-                        }}
-                      />
-                      <span>{he.actionForUpdate}</span>
-                    </label>
-                  </div>
-                </fieldset>
-              </>
-            ) : null}
             <label className="fr-field-wrap">
-              <span className="fr-label">
-                {formMode === "file_request" ? he.fileDescriptionLabel : he.instructionLabel}
-              </span>
+              <span className="fr-label">{he.fileDescriptionLabel}</span>
               <textarea
                 className="fr-area"
                 maxLength={INSTRUCTION_MAX}
@@ -2323,11 +2703,6 @@ function WorkspaceReadyView({
                   setInstruction(event.target.value);
                 }}
               />
-              {formError &&
-              (formError === he.cloudError.instruction_required ||
-                formError === he.instructionTooLong) ? (
-                <span className="fr-field-error">{formError}</span>
-              ) : null}
             </label>
             <label className="fr-field-wrap">
               <span className="fr-label">{he.dueOnLabel}</span>
@@ -2340,29 +2715,6 @@ function WorkspaceReadyView({
                 }}
               />
             </label>
-            {formError &&
-            formError !== he.cloudError.instruction_required &&
-            formError !== he.instructionTooLong ? (
-              <p role="alert" className="fr-field-error">
-                {formError}
-              </p>
-            ) : null}
-            {sending ? (
-              <div className="fr-progress">
-                <span>
-                  {sendProgress === "sending"
-                    ? he.handoffStatus.sending
-                    : sendProgress === "uploading"
-                      ? he.uploadingFile
-                      : he.finishingRequest}
-                </span>
-                {sendProgress === "uploading" ? (
-                  <div className="fr-progress-bar">
-                    <span />
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
             <div className="fr-sheet-actions">
               <button type="button" className="fr-btn fr-btn-secondary" onClick={closeCompose}>
                 {he.cancel}
@@ -2373,10 +2725,11 @@ function WorkspaceReadyView({
                 disabled={sending}
                 onClick={onSend}
               >
-                {formMode === "file_request" ? he.sendRequest : he.send}
+                {he.sendRequest}
               </button>
             </div>
           </div>
+          )}
         </div>
       ) : null}
     </main>

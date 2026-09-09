@@ -34,11 +34,11 @@ export function validateInstruction(instruction: string): SendFormError | null {
 }
 
 export function validateSendForm(input: SendFormInput): SendFormError | null {
-  if (!input.recipientMemberId) {
-    return "recipient_required";
-  }
   if (!input.picked) {
     return "file_required";
+  }
+  if (!input.recipientMemberId) {
+    return "recipient_required";
   }
   return validateInstruction(input.instruction);
 }

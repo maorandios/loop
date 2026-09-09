@@ -713,6 +713,22 @@ export default function App({
     }
   }
 
+  async function onPickDroppedFile(path: string) {
+    const previous = pickedFile?.selectionId ?? null;
+    if (previous) {
+      await clearSelection(previous);
+      setPickedFile(null);
+    }
+    try {
+      const picked = await invoke<PickedFile | null>("pick_send_file_from_path", { path });
+      if (picked) {
+        setPickedFile(picked);
+      }
+    } catch (cause) {
+      setError(cloudErrorLabel(cloudErrorCode(cause)));
+    }
+  }
+
   async function onCancelSend() {
     const inFlight =
       sendProgressRef.current === "sending" ||
@@ -1427,6 +1443,7 @@ export default function App({
         autostartEnabled={autostartEnabled}
         onToggleAutostart={onToggleAutostart}
         onPickFile={onPickFile}
+        onPickDroppedFile={onPickDroppedFile}
         onCancelSend={onCancelSend}
         onSubmitSend={onSubmitSend}
         onSubmitFileRequest={onSubmitFileRequest}

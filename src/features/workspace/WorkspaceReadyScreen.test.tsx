@@ -126,7 +126,8 @@ describe("WorkspaceReadyScreen", () => {
     expect(screen.queryByRole("button", { name: he.copyJoinCode })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.back }));
     openCompose();
-    expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: he.whatDoYouWant })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: he.sendNewFile })).toBeInTheDocument();
     expect(screen.getByText(he.noPrimaryAction)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("C:\\\\");
     expect(document.body.textContent).not.toContain("signedUrl");
@@ -218,8 +219,7 @@ describe("WorkspaceReadyScreen", () => {
       />,
     );
     openCompose();
-    expect(screen.getAllByText(he.sendFile).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByLabelText(he.requestFile));
+    fireEvent.click(screen.getByRole("button", { name: he.requestFile }));
     expect(screen.queryByRole("button", { name: he.chooseFile })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(he.fileDescriptionLabel), {
       target: { value: "נא לצרף את הדוח החתום" },
@@ -235,6 +235,50 @@ describe("WorkspaceReadyScreen", () => {
 
   it("does not send without a file, recipient, or instruction", () => {
     const onSubmitSend = vi.fn();
+    const screenProps = {
+      workspace,
+      displayName: "מאור",
+      currentUserId: "user-1",
+      currentMemberId: "member-1",
+      members,
+      onSubmitSend,
+      onPickFile: () => undefined,
+    };
+    const { rerender } = render(<WorkspaceReadyScreen {...screenProps} />);
+
+    openCompose();
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
+    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    expect(onSubmitSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.fileRequired);
+    expect(document.querySelector(".fr-compose-send .fr-push")).toHaveAttribute("data-tone", "danger");
+    expect(document.querySelector(".fr-field-error")).toBeNull();
+
+    rerender(
+      <WorkspaceReadyScreen
+        {...screenProps}
+        pickedFile={{
+          selectionId: "sel-1",
+          originalFilename: "דוח.docx",
+          size: 12,
+          blake3: "ab".repeat(32),
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    expect(onSubmitSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.recipientRequired);
+
+    fireEvent.change(screen.getByLabelText(he.toAtLabel), {
+      target: { value: "דני" },
+    });
+    fireEvent.click(screen.getByRole("option", { name: "דני" }));
+    fireEvent.click(screen.getByRole("button", { name: he.send }));
+    expect(onSubmitSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert")).toHaveTextContent(he.taskDescriptionRequired);
+  });
+
+  it("shows send upload progress in the compose push instead of the form footer", () => {
     render(
       <WorkspaceReadyScreen
         workspace={workspace}
@@ -242,15 +286,106 @@ describe("WorkspaceReadyScreen", () => {
         currentUserId="user-1"
         currentMemberId="member-1"
         members={members}
-        onSubmitSend={onSubmitSend}
+        pickedFile={{
+          selectionId: "sel-1",
+          originalFilename: "דוח.docx",
+          size: 12,
+          blake3: "ab".repeat(32),
+        }}
+        sendProgress="uploading"
+        onSubmitSend={() => undefined}
         onPickFile={() => undefined}
       />,
     );
 
     openCompose();
-    fireEvent.click(screen.getByRole("button", { name: he.send }));
-    expect(onSubmitSend).not.toHaveBeenCalled();
-    expect(screen.getByRole("alert")).toHaveTextContent(he.fileRequired);
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
+    expect(screen.getByRole("status")).toHaveTextContent(he.uploadingFile);
+    expect(document.querySelector(".fr-compose-send .fr-push")).toHaveAttribute("data-tone", "accent");
+    expect(document.querySelector(".fr-compose-send .fr-progress")).toBeNull();
+  });
+
+  it("returns from send form to the compose chooser", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={members}
+        onSubmitSend={() => undefined}
+        onPickFile={() => undefined}
+      />,
+    );
+
+    openCompose();
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
+    expect(screen.getByRole("heading", { name: he.sendNewFile })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.back }));
+    expect(screen.getByRole("heading", { name: he.whatDoYouWant })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.closeDialog }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("filters organization members as the recipient is typed", () => {
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={[
+          ...members,
+          {
+            ...members[1]!,
+            id: "member-3",
+            userId: "user-3",
+            deviceId: "33333333-3333-4333-8333-333333333333",
+            displayName: "בניה",
+            email: "benaya@drops.app",
+          },
+        ]}
+        onSubmitSend={() => undefined}
+        onPickFile={() => undefined}
+      />,
+    );
+
+    openCompose();
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
+    const input = screen.getByLabelText(he.toAtLabel);
+    fireEvent.change(input, { target: { value: "בנ" } });
+    expect(screen.getByRole("option", { name: "בניה • benaya@drops.app" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "דני" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("option", { name: "בניה • benaya@drops.app" }));
+    expect(input).toHaveValue("בניה • benaya@drops.app");
+  });
+
+  it("lets the sender remove a picked file from the dropzone", () => {
+    const onCancelSend = vi.fn();
+    render(
+      <WorkspaceReadyScreen
+        workspace={workspace}
+        displayName="מאור"
+        currentUserId="user-1"
+        currentMemberId="member-1"
+        members={members}
+        pickedFile={{
+          selectionId: "sel-1",
+          originalFilename: "דוח.docx",
+          size: 12,
+          blake3: "ab".repeat(32),
+        }}
+        onSubmitSend={() => undefined}
+        onPickFile={() => undefined}
+        onCancelSend={onCancelSend}
+      />,
+    );
+
+    openCompose();
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
+    expect(screen.getByText("דוח.docx")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: he.removeFile }));
+    expect(onCancelSend).toHaveBeenCalled();
   });
 
   it("blocks an empty revision note", () => {

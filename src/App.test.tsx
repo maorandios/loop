@@ -516,6 +516,7 @@ describe("App cloud workspace flow", () => {
     );
     expect(await screen.findByText(he.noPrimaryAction)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
 
     handoffService.emitIncoming([
@@ -668,11 +669,15 @@ describe("App cloud workspace flow", () => {
       />,
     );
     fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
     expect(screen.getByRole("button", { name: he.send })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(he.instructionLabel), {
+    fireEvent.change(screen.getByLabelText(he.taskDescriptionLabel), {
       target: { value: "נא לבדוק" },
+    });
+    fireEvent.change(screen.getByLabelText(he.toAtLabel), {
+      target: { value: "דנה" },
     });
     fireEvent.click(screen.getByRole("button", { name: he.send }));
     await waitFor(() => {
@@ -752,10 +757,14 @@ describe("App cloud workspace flow", () => {
       />,
     );
     fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("דוח.docx")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText(he.instructionLabel), {
+    fireEvent.change(screen.getByLabelText(he.taskDescriptionLabel), {
       target: { value: "נא לבדוק" },
+    });
+    fireEvent.change(screen.getByLabelText(he.toAtLabel), {
+      target: { value: "דנה" },
     });
     fireEvent.click(screen.getByRole("button", { name: he.send }));
     await waitFor(() => {
@@ -817,6 +826,7 @@ describe("App cloud workspace flow", () => {
       />,
     );
     fireEvent.click(await screen.findByRole("button", { name: he.newRequest }));
+    fireEvent.click(screen.getByRole("button", { name: he.sendNewFile }));
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));
     expect(await screen.findByText("ישן.docx")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.chooseFile }));

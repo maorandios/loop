@@ -180,9 +180,9 @@ describe("Inbox UI", () => {
   it("opens and closes the compose sheet", () => {
     renderRecipient();
     fireEvent.click(screen.getByRole("button", { name: he.newRequest }));
-    expect(screen.getByRole("dialog", { name: he.newRequest })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: he.whatDoYouWant })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: he.closeDialog }));
-    expect(screen.queryByRole("dialog", { name: he.newRequest })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: he.whatDoYouWant })).not.toBeInTheDocument();
   });
 
   it("opens and closes the filter popover", () => {

@@ -785,13 +785,7 @@ async fn download_to_part(
     Ok(())
 }
 
-#[tauri::command]
-pub fn pick_send_file(app: AppHandle, state: State<AppState>) -> Result<Option<PickedFile>, String> {
-    let picked = app.dialog().file().blocking_pick_file();
-    let Some(file) = picked else {
-        return Ok(None);
-    };
-    let path = file.into_path().map_err(|_| SEND_FAILED.to_string())?;
+fn picked_file_from_path(state: &AppState, path: PathBuf) -> Result<PickedFile, String> {
     let meta = fs::metadata(&path).map_err(|_| SEND_FAILED.to_string())?;
     if !meta.is_file() {
         return Err(SEND_FAILED.to_string());
@@ -814,12 +808,30 @@ pub fn pick_send_file(app: AppHandle, state: State<AppState>) -> Result<Option<P
         .lock()
         .expect("selection lock")
         .insert(selection_id, path);
-    Ok(Some(PickedFile {
+    Ok(PickedFile {
         selection_id,
         original_filename,
         size,
         blake3,
-    }))
+    })
+}
+
+#[tauri::command]
+pub fn pick_send_file(app: AppHandle, state: State<AppState>) -> Result<Option<PickedFile>, String> {
+    let picked = app.dialog().file().blocking_pick_file();
+    let Some(file) = picked else {
+        return Ok(None);
+    };
+    let path = file.into_path().map_err(|_| SEND_FAILED.to_string())?;
+    Ok(Some(picked_file_from_path(&state, path)?))
+}
+
+#[tauri::command]
+pub fn pick_send_file_from_path(
+    state: State<AppState>,
+    path: String,
+) -> Result<Option<PickedFile>, String> {
+    Ok(Some(picked_file_from_path(&state, PathBuf::from(path))?))
 }
 
 #[tauri::command]
